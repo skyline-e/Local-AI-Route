@@ -1,4 +1,4 @@
-# Local-AI-Route
+<h1 align="center">Local-AI-Route</h1>
 
 <p align="center">
   <b>简体中文</b> · <a href="README.en.md">English</a>
