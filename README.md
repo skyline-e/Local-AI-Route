@@ -1,12 +1,33 @@
 # Local-AI-Route
 
 <p align="center">
-  <b>简体中文</b> · <a href="README.en.md">English</a> · <a href="docs/PLAN.md">项目计划书</a>
+  <b>简体中文</b> · <a href="README.en.md">English</a>
 </p>
 
-**Local-AI-Route** 是一款面向桌面 AI 应用的轻量级、免全局 TUN、免改系统代理的**进程级本地代理启动与四维连接诊断工具**，基于 **Rust + Tauri v2 + Vue 3 / Tailwind CSS** 现代原生架构开发，兼具极致的启动速度（<0.3s）、极小的安装体积（~15MB）与高可靠的零崩溃系统级掌控能力。
+<p align="center">
+  <img src="https://img.shields.io/badge/Rust-black?style=flat-square&logo=rust&logoColor=white" alt="Rust" />
+  <img src="https://img.shields.io/badge/Tauri_v2-24C8D8?style=flat-square&logo=tauri&logoColor=white" alt="Tauri v2" />
+  <img src="https://img.shields.io/badge/Vue_3-4FC08D?style=flat-square&logo=vue.js&logoColor=white" alt="Vue 3" />
+  <img src="https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=flat-square&logo=tailwind-css&logoColor=white" alt="Tailwind CSS" />
+  <img src="https://img.shields.io/badge/Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Windows" />
+  <img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="MIT License" />
+</p>
 
-> 本工具不提供任何代理节点或网络接入服务，仅将您本机已运行的本地代理（如 Clash / Mihomo / FlClash / v2rayN）按进程级参数与环境变量注入兼容的桌面 AI 应用。
+**Local-AI-Route** 是一款专为桌面 AI 应用打造的轻量级、免全局 TUN、免改系统代理的**进程级本地代理启动与管理工具**。开箱**原生深度适配**：
+
+- 🤖 **ChatGPT**（兼容 Microsoft Store 商店版与独立安装包）
+- 🧠 **Claude**（兼容 MSIX 商店版、Squirrel 增量更新包与标准安装包）
+- 🌌 **Antigravity 桌面版**
+- ⚡ **Antigravity IDE**（精确区分注册表条目，专项保障 LSP 子进程代理继承）
+- 🧩 **自定义扩展**：一键添加任意 Chromium / Electron 类桌面 AI 应用（如 Cursor、Windsurf 等）
+
+> [!NOTE]
+> - 本工具不提供任何代理节点或网络接入服务，仅将您本机已运行的本地代理（如 Clash / Mihomo / FlClash / v2rayN）按进程级参数与环境变量注入兼容的桌面 AI 应用。
+> - **平台支持说明**：暂只测试过 Windows 平台可用，若想在其他平台使用请自行编译。
+
+<p align="center">
+  <img src="docs/image.png" alt="Local-AI-Route 软件界面截图" width="850" />
+</p>
 
 ---
 
@@ -56,19 +77,6 @@ pnpm tauri dev
 # 3. 构建 Windows x64 独立绿色发布包
 .\scripts\build_windows.ps1
 ```
-
----
-
-## 技术架构优势（对比传统 Python 方案）
-
-| 维度 | 旧方案 (Python + CustomTkinter) | **现方案 (Rust + Tauri v2)** |
-| :--- | :--- | :--- |
-| **单文件 / 压缩包体积** | 80MB ~ 150MB | **~15MB (精简近 85%)** |
-| **冷启动耗时** | 1~3 秒明显卡顿 | **< 0.3 秒瞬间秒开** |
-| **内存占用 (托盘驻留)** | 80MB ~ 120MB | **30MB ~ 40MB** |
-| **高 DPI / 多屏缩放** | 偶发文字发虚、布局撕裂 | **原生 WebKit/WebView2 矢量无损** |
-| **杀毒软件误报率** | 高 (PyInstaller 通病) | **极低 (纯原生 PE 机器码)** |
-| **进程与系统交互稳定性** | 容易因多线程竞争锁死 Tkinter | **Rust 所有权模型编译期保证并发安全** |
 
 ---
 

@@ -1,12 +1,33 @@
 # Local-AI-Route
 
 <p align="center">
-  <a href="README.md">简体中文</a> · <b>English</b> · <a href="docs/PLAN.md">Project Plan</a>
+  <a href="README.md">简体中文</a> · <b>English</b>
 </p>
 
-**Local-AI-Route** is a lightweight, zero-global-TUN, process-scoped proxy launcher and four-dimensional connection diagnostics tool designed for desktop AI applications. Built on a modern **Rust + Tauri v2 + Vue 3 / Tailwind CSS** architecture, it delivers sub-second startup (<0.3s), a ~15MB distribution size, and high-reliability, crash-free OS integration.
+<p align="center">
+  <img src="https://img.shields.io/badge/Rust-black?style=flat-square&logo=rust&logoColor=white" alt="Rust" />
+  <img src="https://img.shields.io/badge/Tauri_v2-24C8D8?style=flat-square&logo=tauri&logoColor=white" alt="Tauri v2" />
+  <img src="https://img.shields.io/badge/Vue_3-4FC08D?style=flat-square&logo=vue.js&logoColor=white" alt="Vue 3" />
+  <img src="https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=flat-square&logo=tailwind-css&logoColor=white" alt="Tailwind CSS" />
+  <img src="https://img.shields.io/badge/Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Windows" />
+  <img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="MIT License" />
+</p>
 
-> This tool does not provide any proxy servers or network services. It merely injects your running local proxy (e.g. Clash / Mihomo / FlClash / v2rayN) into compatible desktop AI applications via process arguments and environment variables.
+**Local-AI-Route** is a lightweight, zero-global-TUN, process-scoped proxy launcher and four-dimensional connection diagnostics tool designed for desktop AI applications. It natively supports:
+
+- 🤖 **ChatGPT** (compatible with Microsoft Store and standalone packages)
+- 🧠 **Claude** (compatible with MSIX, Squirrel incremental installs, and standard packages)
+- 🌌 **Antigravity Desktop**
+- ⚡ **Antigravity IDE** (strict registry disambiguation & dedicated LSP proxy inheritance checks)
+- 🧩 **Custom Extensible**: One-click addition of any Chromium / Electron-based desktop AI app (e.g. Cursor, Windsurf)
+
+> [!NOTE]
+> - This tool does not provide any proxy servers or network services. It merely injects your running local proxy (e.g. Clash / Mihomo / FlClash / v2rayN) into compatible desktop AI applications via process arguments and environment variables.
+> - **Platform Notice**: Currently, only the Windows platform has been tested and verified. If you wish to use it on other platforms (macOS / Linux), please compile from source yourself.
+
+<p align="center">
+  <img src="docs/image.png" alt="Local-AI-Route Preview" width="850" />
+</p>
 
 ---
 
