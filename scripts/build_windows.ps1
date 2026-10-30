@@ -43,6 +43,13 @@ if (Test-Path $releaseExe) {
     }
 
     Copy-Item $releaseExe (Join-Path $distDir "Local-AI-Route.exe")
+
+    $loaderDll = Join-Path $projectRoot "src-tauri\target\release\WebView2Loader.dll"
+    if (Test-Path $loaderDll) {
+        Copy-Item $loaderDll (Join-Path $distDir "WebView2Loader.dll")
+        Write-Host "✔ Included WebView2Loader.dll in distribution" -ForegroundColor Green
+    }
+
     New-Item -ItemType File -Path (Join-Path $distDir "portable.flag") | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $distDir "data") | Out-Null
 

@@ -294,6 +294,9 @@ pub fn create_desktop_shortcut(app_id: &str, app_name: &str, target_icon_exe: &s
 
     let mut sl = mslnk::ShellLink::new(&current_exe).map_err(|e| e.to_string())?;
     sl.set_arguments(Some(format!("--launch {}", app_id)));
+    if let Some(parent) = current_exe.parent() {
+        sl.set_working_dir(Some(parent.to_string_lossy().to_string()));
+    }
     if !target_icon_exe.is_empty() && Path::new(target_icon_exe).is_file() {
         sl.set_icon_location(Some(target_icon_exe.to_string()));
     }
