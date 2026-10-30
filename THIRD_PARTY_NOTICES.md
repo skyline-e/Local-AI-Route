@@ -1,6 +1,6 @@
 # Third-Party Notices & Upstream Attribution
 
-**Local-AI-Route** is an independent Python implementation inspired by and synthesizing architectural concepts from the following MIT-licensed open-source projects:
+**Local-AI-Route** is an independent Rust + Tauri v2 + Vue 3 implementation inspired by and synthesizing architectural concepts from the following MIT-licensed open-source projects:
 
 1. **Local Route Launcher (`oliver804/Local-Route-Launcher`)**
    - Repository: https://github.com/oliver804/Local-Route-Launcher
@@ -14,12 +14,23 @@
    - License: MIT License
    - Referenced concepts: Dual-target discovery and registry disambiguation between Antigravity Desktop (Hub) and Antigravity IDE, local listening proxy port scanning, `language_server` child process identification, and portable `data/` storage convention.
 
+3. **Claude Desktop Windows Proxy Launcher (`king-sheol/claude-desktop-windows-proxy-launcher`)**
+   - Repository: https://github.com/king-sheol/claude-desktop-windows-proxy-launcher
+   - Copyright (c) 2026 king-sheol
+   - License: MIT License
+   - Referenced concepts: Multi-channel `Claude.exe` executable discovery across MSIX/AppX package repositories, Squirrel versioned directories (`%LOCALAPPDATA%\AnthropicClaude\app-*`), standard installation paths, and Windows Uninstall registry keys; working directory alignment on launch; and terminating existing unproxied single-instance processes (`-RestartExisting`) prior to relaunching with proxy arguments (while omitting legacy forced `--disable-gpu` flags to preserve hardware acceleration).
+
 ---
 
-## Runtime Python Dependencies
+## Core Open-Source Dependencies
 
-- **CustomTkinter** — MIT License (https://github.com/TomSchimansky/CustomTkinter)
-- **pystray** — LGPLv3 License (https://github.com/moses-palmer/pystray)
-- **Pillow (PIL Fork)** — MIT-CMU License (https://github.com/python-pillow/Pillow)
-- **psutil** — BSD-3-Clause License (https://github.com/giampaolo/psutil)
-- **HTTPX & socksio** — BSD-3-Clause License (https://github.com/encode/httpx)
+- **Tauri v2** — Apache-2.0 OR MIT License (https://github.com/tauri-apps/tauri)
+- **Vue 3** — MIT License (https://github.com/vuejs/core)
+- **Tailwind CSS** — MIT License (https://github.com/tailwindlabs/tailwindcss)
+- **Lucide Icons (`lucide-vue-next`)** — ISC License (https://github.com/lucide-icons/lucide)
+- **Tokio** — MIT License (https://github.com/tokio-rs/tokio)
+- **Reqwest** — Apache-2.0 OR MIT License (https://github.com/seanmonstar/reqwest)
+- **sysinfo** — MIT License (https://github.com/GuillaumeGomez/sysinfo)
+- **windows-rs** — Apache-2.0 OR MIT License (https://github.com/microsoft/windows-rs)
+- **winreg** — MIT License (https://github.com/gentoo90/winreg-rs)
+- **mslnk** — MIT License (https://github.com/lyckantropen/mslnk)

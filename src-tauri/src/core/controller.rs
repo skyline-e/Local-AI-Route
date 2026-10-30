@@ -1,18 +1,48 @@
 use super::models::{AppRuntimeState, ProxyConfig, RunStatus, TargetAppSpec};
 use super::proxy::{format_chromium_bypass_list, format_no_proxy_env};
 use crate::platforms::request_graceful_close;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::Path;
 use std::process::Command;
-use sysinfo::{Pid, ProcessesToUpdate, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+
+pub fn refresh_processes_for_inspection(sys: &mut System, include_env: bool) {
+    let mut kind = ProcessRefreshKind::nothing()
+        .with_exe(UpdateKind::OnlyIfNotSet)
+        .with_cmd(UpdateKind::OnlyIfNotSet);
+    if include_env {
+        kind = kind.with_environ(UpdateKind::OnlyIfNotSet);
+    }
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
+}
+
+pub fn is_versioned_package_path(path: &str) -> bool {
+    let norm = path.replace('/', "\\").to_lowercase();
+    norm.contains("\\windowsapps\\") || norm.contains("\\app-")
+}
+
+pub fn should_heal_builtin_path(exe_path: &str) -> bool {
+    exe_path.is_empty()
+        || !is_executable_present(Path::new(exe_path))
+        || is_versioned_package_path(exe_path)
+}
 
 pub fn is_chromium_helper(cmd: &[String]) -> bool {
-    cmd.iter().any(|arg| arg.starts_with("--type=") || arg == "--crashpad-handler")
+    cmd.iter().any(|arg| {
+        let low = arg.to_lowercase();
+        low.starts_with("--type=")
+            || low == "--crashpad-handler"
+            || low == "--node-ipc"
+            || low == "--usenodeipc"
+            || low.starts_with("--clientprocessid=")
+            || low == "--ms-enable-electron-run-as-node"
+    })
 }
 
 pub fn extract_proxy_arg(cmd: &[String]) -> Option<String> {
     for arg in cmd {
-        if let Some(stripped) = arg.strip_prefix("--proxy-server=") {
+        let cleaned = arg.trim().trim_matches('"');
+        if let Some(stripped) = cleaned.strip_prefix("--proxy-server=") {
             return Some(stripped.trim().trim_matches('"').to_string());
         }
     }
@@ -93,49 +123,32 @@ pub fn inspect_app_state(sys: &System, spec: &TargetAppSpec, proxy: &ProxyConfig
         .unwrap_or("")
         .to_lowercase();
 
-    // Precompile regex outside process iteration loop for optimal performance
-    let compiled_regex = if !spec.sidecar_cmdline_regex.is_empty() {
-        regex::Regex::new(&spec.sidecar_cmdline_regex).ok()
-    } else {
-        None
-    };
-
-    let mut matched_pids = Vec::new();
-    let mut main_cmdline = Vec::new();
+    let mut all_candidate_pids = HashSet::new();
+    let mut helper_pids = HashSet::new();
+    let mut non_helper_candidates: BTreeMap<u32, Vec<String>> = BTreeMap::new();
 
     for (pid, process) in sys.processes() {
         let p_name = process.name().to_string_lossy().to_lowercase();
         let cmd: Vec<String> = process.cmd().iter().map(|s| s.to_string_lossy().to_string()).collect();
-        let cmd_joined = cmd.join(" ");
 
         let exe_matches = if let Some(exe) = process.exe() {
             let exe_norm = exe.to_string_lossy().replace('/', "\\").to_lowercase();
             if exe_norm == spec_path_norm {
-                if let Some(ref re) = compiled_regex {
-                    re.is_match(&cmd_joined)
-                } else {
-                    true
-                }
+                true
             } else if exe
                 .file_name()
                 .and_then(|f| f.to_str())
                 .map(|s| is_matching_exe_name(&s.to_lowercase(), &target_file_name))
                 .unwrap_or(false)
             {
-                if let Some(ref re) = compiled_regex {
-                    re.is_match(&cmd_joined)
-                } else {
-                    is_same_app_family(spec_path, &spec_path_norm, exe, &exe_norm)
-                }
+                is_same_app_family(spec_path, &spec_path_norm, exe, &exe_norm)
             } else {
                 false
             }
         } else {
             let name_matches = is_matching_exe_name(&p_name, &target_file_name);
             if name_matches {
-                if let Some(ref re) = compiled_regex {
-                    re.is_match(&cmd_joined)
-                } else if let Some(first_arg) = cmd.first() {
+                if let Some(first_arg) = cmd.first() {
                     let cleaned_arg = first_arg.trim().trim_matches('"');
                     let cmd_exe = Path::new(cleaned_arg);
                     let cmd_exe_norm = cleaned_arg.replace('/', "\\").to_lowercase();
@@ -153,12 +166,56 @@ pub fn inspect_app_state(sys: &System, spec: &TargetAppSpec, proxy: &ProxyConfig
             continue;
         }
 
+        let pid_u32 = pid.as_u32();
+        all_candidate_pids.insert(pid_u32);
+
         if is_chromium_helper(&cmd) {
+            helper_pids.insert(pid_u32);
             continue;
         }
 
-        matched_pids.push(pid.as_u32());
-        if main_cmdline.is_empty() || (extract_proxy_arg(&main_cmdline).is_none() && extract_proxy_arg(&cmd).is_some()) {
+        non_helper_candidates.insert(pid_u32, cmd);
+    }
+
+    // Filter out any candidate whose ancestor is a Chromium/Electron helper process (e.g. Node extension workers)
+    let mut matched_pids = Vec::new();
+    let mut main_cmdline = Vec::new();
+    let mut best_rank: Option<(bool, bool, bool)> = None;
+
+    for (pid_u32, cmd) in non_helper_candidates {
+        let mut curr = sys.process(Pid::from_u32(pid_u32)).and_then(|p| p.parent());
+        let mut has_helper_ancestor = false;
+        let mut has_candidate_ancestor = false;
+        let mut visited = HashSet::new();
+
+        while let Some(parent_pid) = curr {
+            let pp_u32 = parent_pid.as_u32();
+            if !visited.insert(pp_u32) {
+                break;
+            }
+            if helper_pids.contains(&pp_u32) {
+                has_helper_ancestor = true;
+                break;
+            }
+            if all_candidate_pids.contains(&pp_u32) {
+                has_candidate_ancestor = true;
+            }
+            curr = sys.process(parent_pid).and_then(|p| p.parent());
+        }
+
+        if has_helper_ancestor {
+            continue;
+        }
+
+        let is_root = !has_candidate_ancestor;
+        matched_pids.push(pid_u32);
+
+        let cmd_has_proxy = extract_proxy_arg(&cmd).is_some();
+        let has_non_empty_cmd = cmd.iter().any(|s| !s.is_empty());
+        let rank = (cmd_has_proxy, has_non_empty_cmd, is_root);
+
+        if best_rank.map_or(true, |prev| rank > prev) {
+            best_rank = Some(rank);
             main_cmdline = cmd;
         }
     }
@@ -278,7 +335,7 @@ pub fn launch_target(spec: &TargetAppSpec, proxy: &ProxyConfig) -> Result<u32, S
     Ok(child.id())
 }
 
-pub fn stop_target(pids: &[u32], force: bool) -> Result<(), String> {
+pub fn stop_target(sys: &System, pids: &[u32], force: bool) -> Result<(), String> {
     if pids.is_empty() {
         return Ok(());
     }
@@ -286,9 +343,7 @@ pub fn stop_target(pids: &[u32], force: bool) -> Result<(), String> {
     if !force {
         request_graceful_close(pids);
     } else {
-        let mut sys = System::new();
-        sys.refresh_processes(ProcessesToUpdate::All, true);
-        let tree = collect_process_tree(&sys, pids);
+        let tree = collect_process_tree(sys, pids);
         for pid in tree {
             if let Some(proc) = sys.process(Pid::from_u32(pid)) {
                 let _ = proc.kill();
@@ -304,14 +359,14 @@ pub fn ensure_stopped_before_relaunch(pids: &[u32], allow_force_kill: bool) -> b
     }
 
     let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::All, true);
+    refresh_processes_for_inspection(&mut sys, false);
     let mut tracked_tree = collect_process_tree(&sys, pids);
 
     request_graceful_close(pids);
 
     for _ in 0..6 {
         std::thread::sleep(std::time::Duration::from_millis(200));
-        sys.refresh_processes(ProcessesToUpdate::All, true);
+        refresh_processes_for_inspection(&mut sys, false);
         let current_tree = collect_process_tree(&sys, pids);
         tracked_tree.extend(current_tree);
 
@@ -332,7 +387,7 @@ pub fn ensure_stopped_before_relaunch(pids: &[u32], allow_force_kill: bool) -> b
     }
 
     // If app minimized to tray on WM_CLOSE or user explicitly confirmed force restart, terminate tracked tree
-    sys.refresh_processes(ProcessesToUpdate::All, true);
+    refresh_processes_for_inspection(&mut sys, false);
     tracked_tree.extend(collect_process_tree(&sys, pids));
     for pid in tracked_tree {
         if let Some(proc) = sys.process(Pid::from_u32(pid)) {

@@ -1,7 +1,7 @@
-use super::controller::{collect_process_tree, extract_proxy_arg, inspect_app_state};
+use super::controller::{collect_process_tree, extract_proxy_arg, inspect_app_state, refresh_processes_for_inspection};
 use super::models::{CheckStatus, DiagItem, DiagReport, ProxyConfig, TargetAppSpec};
 use std::time::Duration;
-use sysinfo::{Pid, ProcessesToUpdate, System};
+use sysinfo::{Pid, System};
 
 pub fn redact_path(input: &str) -> String {
     let mut out = input.to_string();
@@ -88,9 +88,9 @@ pub async fn run_diagnostics(spec: &TargetAppSpec, proxy: &ProxyConfig) -> DiagR
         });
     }
 
-    // Refresh system processes for local stages
+    // Refresh system processes for local stages (including cmdline and environment variables)
     let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::All, true);
+    refresh_processes_for_inspection(&mut sys, true);
 
     let runtime = inspect_app_state(&sys, spec, proxy);
 
@@ -104,9 +104,13 @@ pub async fn run_diagnostics(spec: &TargetAppSpec, proxy: &ProxyConfig) -> DiagR
         });
     } else {
         let expected_authority = proxy.authority().to_lowercase();
-        let detected = extract_proxy_arg(
-            &runtime.cmdline_preview.split_whitespace().map(|s| s.to_string()).collect::<Vec<_>>(),
-        );
+        let detected = if !runtime.matched_proxy.is_empty() {
+            Some(runtime.matched_proxy.clone())
+        } else {
+            extract_proxy_arg(
+                &runtime.cmdline_preview.split_whitespace().map(|s| s.to_string()).collect::<Vec<_>>(),
+            )
+        };
 
         let (status, summary) = if !spec.proxy_enabled {
             if detected.is_none() {
@@ -134,6 +138,13 @@ pub async fn run_diagnostics(spec: &TargetAppSpec, proxy: &ProxyConfig) -> DiagR
         });
     }
 
+    // Pre-collect process tree once for both Stage 3 and Stage 4
+    let mut tree_pids = if runtime.pids.is_empty() {
+        std::collections::HashSet::new()
+    } else {
+        collect_process_tree(&sys, &runtime.pids)
+    };
+
     // Stage 3: Subprocess Env Check (Antigravity specialized check)
     if runtime.pids.is_empty() {
         items.push(DiagItem {
@@ -150,17 +161,63 @@ pub async fn run_diagnostics(spec: &TargetAppSpec, proxy: &ProxyConfig) -> DiagR
             details: vec![],
         });
     } else {
-        let tree_pids = collect_process_tree(&sys, &runtime.pids);
+        let sidecar_regex = if !spec.sidecar_cmdline_regex.is_empty() {
+            regex::Regex::new(&spec.sidecar_cmdline_regex).ok()
+        } else {
+            None
+        };
         let mut matched_children = Vec::new();
+        let mut sorted_tree_pids: Vec<u32> = tree_pids.iter().copied().collect();
+        sorted_tree_pids.sort_unstable();
 
-        for pid in &tree_pids {
+        for pid in &sorted_tree_pids {
             if let Some(proc) = sys.process(Pid::from_u32(*pid)) {
                 let name = proc.name().to_string_lossy().to_lowercase();
                 if spec.child_process_patterns.iter().any(|pat| name.contains(&pat.to_lowercase())) {
+                    let cmd_joined = proc
+                        .cmd()
+                        .iter()
+                        .map(|s| s.to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if let Some(ref re) = sidecar_regex {
+                        if !cmd_joined.is_empty() && !re.is_match(&cmd_joined) {
+                            continue;
+                        }
+                    }
                     let envs = proc.environ();
-                    let https_proxy = envs.iter().find(|e| e.to_string_lossy().starts_with("HTTPS_PROXY="));
+                    let https_proxy = envs
+                        .iter()
+                        .find(|e| e.to_string_lossy().to_ascii_uppercase().starts_with("HTTPS_PROXY="));
                     matched_children.push((name, *pid, https_proxy.map(|s| s.to_string_lossy().to_string())));
                 }
+            }
+        }
+
+        // Fallback: if sidecar process detached from parent tree, match globally using sidecar_cmdline_regex
+        if matched_children.is_empty() {
+            if let Some(ref re) = sidecar_regex {
+                for (pid, proc) in sys.processes() {
+                    let name = proc.name().to_string_lossy().to_lowercase();
+                    if spec.child_process_patterns.iter().any(|pat| name.contains(&pat.to_lowercase())) {
+                        let cmd_joined = proc
+                            .cmd()
+                            .iter()
+                            .map(|s| s.to_string_lossy())
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        if re.is_match(&cmd_joined) {
+                            let pid_u32 = pid.as_u32();
+                            tree_pids.insert(pid_u32);
+                            let envs = proc.environ();
+                            let https_proxy = envs
+                                .iter()
+                                .find(|e| e.to_string_lossy().to_ascii_uppercase().starts_with("HTTPS_PROXY="));
+                            matched_children.push((name, pid_u32, https_proxy.map(|s| s.to_string_lossy().to_string())));
+                        }
+                    }
+                }
+                matched_children.sort_by_key(|(_, pid, _)| *pid);
             }
         }
 
@@ -171,12 +228,41 @@ pub async fn run_diagnostics(spec: &TargetAppSpec, proxy: &ProxyConfig) -> DiagR
                 summary: "未发现独立 language_server 子进程（或当前应用无需独立服务进程）".into(),
                 details: vec![],
             });
-        } else {
+        } else if !spec.proxy_enabled {
             let mut all_ok = true;
             let mut details = Vec::new();
             for (name, pid, env) in matched_children {
                 match env {
-                    Some(e) => details.push(format!("✔ 子进程 {} (PID: {}) 包含环境变量: {}", name, pid, e)),
+                    None => details.push(format!("✔ 子进程 {} (PID: {}) 未携带代理环境变量，符合直连预期", name, pid)),
+                    Some(e) => {
+                        all_ok = false;
+                        details.push(format!("✘ 子进程 {} (PID: {}) 仍残留代理环境变量: {}", name, pid, e));
+                    }
+                }
+            }
+            items.push(DiagItem {
+                title: "关键子进程环境变量核验 (Subprocess Env Check)".into(),
+                status: if all_ok { CheckStatus::Pass } else { CheckStatus::Warn },
+                summary: if all_ok {
+                    "直连模式下所有关键子进程均未携带代理环境变量".into()
+                } else {
+                    "部分子进程仍残留代理环境变量，建议重启应用".into()
+                },
+                details,
+            });
+        } else {
+            let expected_authority = proxy.authority().to_lowercase();
+            let mut all_ok = true;
+            let mut details = Vec::new();
+            for (name, pid, env) in matched_children {
+                match env {
+                    Some(e) if e.to_lowercase().contains(&expected_authority) => {
+                        details.push(format!("✔ 子进程 {} (PID: {}) 包含匹配环境变量: {}", name, pid, e));
+                    }
+                    Some(e) => {
+                        all_ok = false;
+                        details.push(format!("✘ 子进程 {} (PID: {}) 环境变量与当前代理配置不一致: {}", name, pid, e));
+                    }
                     None => {
                         all_ok = false;
                         details.push(format!("✘ 子进程 {} (PID: {}) 缺少 HTTPS_PROXY 环境变量", name, pid));
@@ -186,14 +272,17 @@ pub async fn run_diagnostics(spec: &TargetAppSpec, proxy: &ProxyConfig) -> DiagR
             items.push(DiagItem {
                 title: "关键子进程环境变量核验 (Subprocess Env Check)".into(),
                 status: if all_ok { CheckStatus::Pass } else { CheckStatus::Warn },
-                summary: if all_ok { "所有关键子进程均正常继承代理环境变量".into() } else { "部分子进程缺少代理环境变量".into() },
+                summary: if all_ok {
+                    "所有关键子进程均正常继承当前代理环境变量".into()
+                } else {
+                    "部分子进程缺少代理环境变量或与当前配置不一致，建议重启应用".into()
+                },
                 details,
             });
         }
     }
 
     // Stage 4: PID-tree TCP Snapshot
-    let tree_pids = collect_process_tree(&sys, &runtime.pids);
     if runtime.pids.is_empty() {
         items.push(DiagItem {
             title: "进程树活跃 TCP 快照 (PID-Tree TCP Snapshot)".into(),
@@ -212,10 +301,12 @@ pub async fn run_diagnostics(spec: &TargetAppSpec, proxy: &ProxyConfig) -> DiagR
             };
             (CheckStatus::Pass, summary_text, conn_records)
         } else {
+            let mut sorted_pids: Vec<u32> = tree_pids.iter().copied().collect();
+            sorted_pids.sort_unstable();
             (
                 CheckStatus::Pass,
-                format!("已快照目标应用进程树（{} 个进程），暂未捕获到活跃的 ESTABLISHED/代理 TCP 连接（应用可能尚未发起网络流量）", tree_pids.len()),
-                vec![format!("监控进程 PID 集合: {:?}", tree_pids)],
+                format!("已快照目标应用进程树（{} 个进程），暂未捕获到活跃的 ESTABLISHED/代理 TCP 连接（应用可能尚未发起网络流量）", sorted_pids.len()),
+                vec![format!("监控进程 PID 集合: {:?}", sorted_pids)],
             )
         };
 

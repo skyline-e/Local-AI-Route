@@ -72,7 +72,8 @@ pnpm tauri dev
 
 ---
 
-## 隐私与开源许可
+## 致谢与开源许可
 
+- **设计参考与致谢**：本项目在架构设计与多渠道应用发现机制上参考并融合了 [oliver804/Local-Route-Launcher](https://github.com/oliver804/Local-Route-Launcher)、[DSDS-CMHL/EasyAntigravity](https://github.com/DSDS-CMHL/EasyAntigravity) 以及 [king-sheol/claude-desktop-windows-proxy-launcher](https://github.com/king-sheol/claude-desktop-windows-proxy-launcher) 的优秀思路，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 - **本地零遥测**：无任何账号体系、无后台数据上报；连接诊断仅在用户主动点击时经本地配置的代理发起无凭据握手。
 - **许可证**：[MIT License](LICENSE)

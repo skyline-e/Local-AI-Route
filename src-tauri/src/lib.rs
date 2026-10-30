@@ -3,13 +3,15 @@ pub mod core;
 pub mod platforms;
 
 use commands::AppState;
-use core::controller::{ensure_stopped_before_relaunch, inspect_app_state, is_executable_present, launch_target};
+use core::controller::{
+    ensure_stopped_before_relaunch, inspect_app_state, launch_target, refresh_processes_for_inspection,
+    should_heal_builtin_path,
+};
 use core::models::{RunStatus, TargetOverride};
 use core::presets::find_target_spec;
 use core::storage::{load_settings, save_settings};
-use std::path::Path;
 use std::sync::Mutex;
-use sysinfo::{ProcessesToUpdate, System};
+use sysinfo::System;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, WindowEvent};
@@ -30,15 +32,17 @@ pub fn run() {
     // If --launch <app_id> was requested via CLI / desktop shortcut
     if let Some(target_id) = launch_target_id {
         if let Some(mut target) = find_target_spec(&initial_settings, &target_id) {
-            if target.builtin && (target.exe_path.is_empty() || !is_executable_present(Path::new(&target.exe_path))) {
+            if target.builtin && should_heal_builtin_path(&target.exe_path) {
                 if let Some(detected) = crate::platforms::discover_target_executable(&target.id) {
-                    target.exe_path = detected.clone();
-                    let entry = initial_settings
-                        .targets
-                        .entry(target.id.clone())
-                        .or_insert_with(TargetOverride::default);
-                    entry.exe_path = detected;
-                    let _ = save_settings(&initial_settings);
+                    if target.exe_path != detected {
+                        target.exe_path = detected.clone();
+                        let entry = initial_settings
+                            .targets
+                            .entry(target.id.clone())
+                            .or_insert_with(TargetOverride::default);
+                        entry.exe_path = detected;
+                        let _ = save_settings(&initial_settings);
+                    }
                 }
             }
             if target.exe_path.is_empty() {
@@ -49,7 +53,7 @@ pub fn run() {
             } else {
                 if !target.warn_unsaved_on_kill {
                     let mut sys = System::new();
-                    sys.refresh_processes(ProcessesToUpdate::All, true);
+                    refresh_processes_for_inspection(&mut sys, false);
                     let runtime = inspect_app_state(&sys, &target, &initial_settings.proxy);
                     if matches!(runtime.status, RunStatus::RestartNeeded | RunStatus::RunningUnproxied) {
                         ensure_stopped_before_relaunch(&runtime.pids, true);
@@ -71,6 +75,9 @@ pub fn run() {
         return;
     }
 
+    let mut initial_sys = System::new();
+    refresh_processes_for_inspection(&mut initial_sys, false);
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
@@ -85,7 +92,7 @@ pub fn run() {
         ))
         .manage(AppState {
             settings: Mutex::new(initial_settings),
-            sys: Mutex::new(System::new_all()),
+            sys: Mutex::new(initial_sys),
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,

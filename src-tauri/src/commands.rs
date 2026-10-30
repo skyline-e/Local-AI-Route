@@ -1,5 +1,6 @@
 use crate::core::controller::{
-    ensure_stopped_before_relaunch, inspect_app_state, is_executable_present, launch_target, stop_target,
+    ensure_stopped_before_relaunch, inspect_app_state, launch_target, refresh_processes_for_inspection,
+    should_heal_builtin_path, stop_target,
 };
 use crate::core::diagnostics::run_diagnostics as run_diag_internal;
 use crate::core::models::{AppRuntimeState, AppSettings, DiagReport, RunStatus, TargetAppSpec, TargetOverride};
@@ -7,9 +8,8 @@ use crate::core::presets::{find_target_spec, get_effective_targets as get_effect
 use crate::core::proxy::scan_local_proxy_ports as scan_ports_internal;
 use crate::core::storage::save_settings as save_settings_internal;
 use crate::platforms::{create_desktop_shortcut, discover_target_executable};
-use std::path::Path;
 use std::sync::Mutex;
-use sysinfo::{ProcessesToUpdate, System};
+use sysinfo::System;
 use tauri::State;
 
 use tauri_plugin_autostart::ManagerExt;
@@ -32,14 +32,21 @@ pub fn get_settings(app: tauri::AppHandle, state: State<'_, AppState>) -> AppSet
         settings.autostart = enabled;
     }
 
-    // Auto-detect built-in targets if paths are currently empty or stale after app auto-update
+    // Auto-detect built-in targets if paths are currently empty, stale, or inside versioned MSIX/Squirrel folders
+    let mut updated = false;
     for preset in crate::core::presets::builtin_presets() {
         let entry = settings.targets.entry(preset.id.clone()).or_insert_with(TargetOverride::default);
-        if entry.exe_path.is_empty() || !is_executable_present(Path::new(&entry.exe_path)) {
+        if should_heal_builtin_path(&entry.exe_path) {
             if let Some(detected) = discover_target_executable(&preset.id) {
-                entry.exe_path = detected;
+                if entry.exe_path != detected {
+                    entry.exe_path = detected;
+                    updated = true;
+                }
             }
         }
+    }
+    if updated {
+        let _ = save_settings_internal(&settings);
     }
 
     settings.clone()
@@ -79,7 +86,7 @@ pub fn auto_detect_target(app_id: String) -> Option<String> {
 pub fn get_app_statuses(state: State<'_, AppState>) -> Vec<AppRuntimeState> {
     let settings = safe_lock(&state.settings);
     let mut sys = safe_lock(&state.sys);
-    sys.refresh_processes(ProcessesToUpdate::All, true);
+    refresh_processes_for_inspection(&mut sys, false);
 
     let targets = get_effective_targets_internal(&settings);
     let mut statuses = Vec::new();
@@ -94,12 +101,14 @@ fn resolve_and_heal_target(settings: &mut AppSettings, app_id: &str) -> Result<T
     let mut target = find_target_spec(settings, app_id)
         .ok_or_else(|| format!("Target app '{}' not found", app_id))?;
 
-    if target.builtin && (target.exe_path.is_empty() || !is_executable_present(Path::new(&target.exe_path))) {
+    if target.builtin && should_heal_builtin_path(&target.exe_path) {
         if let Some(detected) = discover_target_executable(&target.id) {
-            target.exe_path = detected.clone();
-            let entry = settings.targets.entry(target.id.clone()).or_insert_with(TargetOverride::default);
-            entry.exe_path = detected;
-            let _ = save_settings_internal(settings);
+            if target.exe_path != detected {
+                target.exe_path = detected.clone();
+                let entry = settings.targets.entry(target.id.clone()).or_insert_with(TargetOverride::default);
+                entry.exe_path = detected;
+                let _ = save_settings_internal(settings);
+            }
         }
     }
 
@@ -117,7 +126,7 @@ pub async fn launch_app(
         let target = resolve_and_heal_target(&mut settings, &app_id)?;
 
         let mut sys = safe_lock(&state.sys);
-        sys.refresh_processes(ProcessesToUpdate::All, true);
+        refresh_processes_for_inspection(&mut sys, false);
         let runtime = inspect_app_state(&sys, &target, &settings.proxy);
         let pids = if matches!(runtime.status, RunStatus::RestartNeeded | RunStatus::RunningUnproxied) {
             runtime.pids
@@ -141,20 +150,22 @@ pub async fn launch_app(
         }
     }
 
-    launch_target(&target, &proxy)
+    let child_pid = launch_target(&target, &proxy)?;
+    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    Ok(child_pid)
 }
 
 #[tauri::command]
 pub fn stop_app(app_id: String, force: bool, state: State<'_, AppState>) -> Result<(), String> {
     let settings = safe_lock(&state.settings);
     let mut sys = safe_lock(&state.sys);
-    sys.refresh_processes(ProcessesToUpdate::All, true);
+    refresh_processes_for_inspection(&mut sys, false);
 
     let target = find_target_spec(&settings, &app_id)
         .ok_or_else(|| format!("Target app '{}' not found", app_id))?;
 
     let runtime = inspect_app_state(&sys, &target, &settings.proxy);
-    stop_target(&runtime.pids, force)
+    stop_target(&sys, &runtime.pids, force)
 }
 
 #[tauri::command]

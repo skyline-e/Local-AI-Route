@@ -56,7 +56,8 @@ pnpm tauri dev
 
 ---
 
-## License
+## Acknowledgements & License
 
+- **Upstream Inspiration**: Architectural concepts and multi-channel discovery mechanisms are inspired by [oliver804/Local-Route-Launcher](https://github.com/oliver804/Local-Route-Launcher), [DSDS-CMHL/EasyAntigravity](https://github.com/DSDS-CMHL/EasyAntigravity), and [king-sheol/claude-desktop-windows-proxy-launcher](https://github.com/king-sheol/claude-desktop-windows-proxy-launcher). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
 - **Local Zero-Telemetry**: No tracking, no data collection.
 - **License**: [MIT License](LICENSE)

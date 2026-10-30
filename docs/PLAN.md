@@ -1,7 +1,7 @@
 # Local-AI-Route 项目计划书
 
 > [!IMPORTANT]
-> 本计划书基于对 [oliver804/Local-Route-Launcher](https://github.com/oliver804/Local-Route-Launcher) 与 [DSDS-CMHL/EasyAntigravity](https://github.com/DSDS-CMHL/EasyAntigravity) 源码的完整拆解及架构设计决策编制。
+> 本计划书基于对 [oliver804/Local-Route-Launcher](https://github.com/oliver804/Local-Route-Launcher)、[DSDS-CMHL/EasyAntigravity](https://github.com/DSDS-CMHL/EasyAntigravity) 与 [king-sheol/claude-desktop-windows-proxy-launcher](https://github.com/king-sheol/claude-desktop-windows-proxy-launcher) 源码的完整拆解及架构设计决策编制。
 > 现已完成向 **Rust + Tauri v2 + Vue 3 / Tailwind CSS** 现代原生方案的全面重构，彻底解决旧方案在打包体积（原 100MB+ 降至 15MB）、高分屏缩放撕裂、冷启动延迟与杀毒软件误报方面的结构性缺陷。
 
 ---
@@ -12,14 +12,15 @@
 
 ### 1.1 上游能力取舍对照
 
-| 能力维度 | Local-Route-Launcher (v1.3.0) | EasyAntigravity (v4.0.4 Lite) | Local-AI-Route 合并方案 (Tauri v2) |
-| :--- | :--- | :--- | :--- |
-| **目标应用** | ChatGPT 桌面端（及商店 Codex） | Antigravity 桌面版 (Hub) + Antigravity IDE | **四大内置预设（ChatGPT APP、Claude APP、Antigravity 桌面版、Antigravity IDE）+ 支持一键添加任意 Chromium/Electron 自定义应用** |
-| **并发管理** | 单目标管理 | 同一时间仅激活单一目标会话 | **多应用并列卡片，支持同时运行、独立启停与独立“走代理 / 直连”开关** |
-| **代理协议与端口** | 仅无认证 HTTP（Host + Port） | 仅本机 HTTP 端口 + 常用端口快捷检测 | **全局共享代理配置，支持 `HTTP` 与 `SOCKS5`、本地常见代理端口扫描填入、可编辑 `NO_PROXY` 绕过列表** |
-| **连接诊断** | 隧道探测 + 启动参数校验 + 进程树 TCP 快照 | 仅基础端口检测与启动日志 | **四维精细化诊断：按应用定制目标域名探测 + 主进程参数校验 + Antigravity `language_server` 子进程环境变量校验 + 进程树 TCP 快照（脱敏导出）** |
-| **日常启动体验** | 必须打开启动器或托盘点击启动 | 必须通过面板点击启动 | **系统托盘快速启停 + 开机静默驻留 + `--launch <id>` 命令行直启 + 一键生成带原应用图标的“带代理桌面快捷方式”** |
-| **跨端稳定性** | Python Tkinter（容易卡死/误报） | Python CustomTkinter | **Rust + Tauri v2（纯 PE 机器码，毫秒级秒开，零误杀，零死锁）** |
+| 能力维度 | Local-Route-Launcher (v1.3.0) | EasyAntigravity (v4.0.4 Lite) | claude-desktop-windows-proxy-launcher | Local-AI-Route 合并方案 (Tauri v2) |
+| :--- | :--- | :--- | :--- | :--- |
+| **目标应用** | ChatGPT 桌面端（及商店 Codex） | Antigravity 桌面版 (Hub) + Antigravity IDE | Claude Desktop（MSIX / Squirrel / Win32） | **四大内置预设（ChatGPT APP、Claude APP、Antigravity 桌面版、Antigravity IDE）+ 支持一键添加任意 Chromium/Electron 自定义应用** |
+| **并发管理** | 单目标管理 | 同一时间仅激活单一目标会话 | 单次脚本启动单应用 | **多应用并列卡片，支持同时运行、独立启停与独立“走代理 / 直连”开关** |
+| **代理协议与端口** | 仅无认证 HTTP（Host + Port） | 仅本机 HTTP 端口 + 常用端口快捷检测 | 参数 / 系统代理 / 环境变量自动解析 | **全局共享代理配置，支持 `HTTP` 与 `SOCKS5`、本地常见代理端口扫描填入、可编辑 `NO_PROXY` 绕过列表** |
+| **进程重启与参数取舍** | 启动新进程或停止进程 | 重启会话 | `-RestartExisting` 强杀旧进程 + 强制附加 `--disable-gpu` 等降级参数 | **智能识别已运行的未走代理/旧代理实例，优先 `WM_CLOSE` 优雅退出再清理残留进程树释放 Electron 单实例锁（对 IDE 额外提供未保存工作确认保护）；剔除过时的强制 `--disable-gpu` 参数以保留硬件加速** |
+| **连接诊断** | 隧道探测 + 启动参数校验 + 进程树 TCP 快照 | 仅基础端口检测与启动日志 | 启动后检测可见窗口句柄 | **四维精细化诊断：按应用定制目标域名探测 + 主进程参数校验 + Antigravity `language_server` 子进程环境变量校验 + 进程树 TCP 快照（脱敏导出）** |
+| **日常启动体验** | 必须打开启动器或托盘点击启动 | 必须通过面板点击启动 | PowerShell / CMD 脚本包装器 + `.lnk` 快捷方式 | **系统托盘快速启停 + 开机静默驻留 + `--launch <id>` 命令行直启（支持应用升级后路径自愈）+ 一键生成带原应用图标的“带代理桌面快捷方式”** |
+| **跨端稳定性** | Python Tkinter（容易卡死/误报） | Python CustomTkinter | PowerShell 脚本 | **Rust + Tauri v2（纯 PE 机器码，毫秒级秒开，零误杀，零死锁）** |
 
 ---
 
