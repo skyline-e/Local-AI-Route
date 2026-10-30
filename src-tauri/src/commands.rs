@@ -9,6 +9,8 @@ use std::sync::Mutex;
 use sysinfo::{ProcessesToUpdate, System};
 use tauri::State;
 
+use tauri_plugin_autostart::ManagerExt;
+
 pub struct AppState {
     pub settings: Mutex<AppSettings>,
     pub sys: Mutex<System>,
@@ -19,8 +21,13 @@ fn safe_lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 #[tauri::command]
-pub fn get_settings(state: State<'_, AppState>) -> AppSettings {
+pub fn get_settings(app: tauri::AppHandle, state: State<'_, AppState>) -> AppSettings {
     let mut settings = safe_lock(&state.settings);
+
+    // Sync autostart from system registry / launch agent
+    if let Ok(enabled) = app.autolaunch().is_enabled() {
+        settings.autostart = enabled;
+    }
 
     // Auto-detect built-in targets if paths are currently empty
     for preset in crate::core::presets::builtin_presets() {
@@ -42,8 +49,14 @@ pub fn get_effective_targets(state: State<'_, AppState>) -> Vec<TargetAppSpec> {
 }
 
 #[tauri::command]
-pub fn save_settings(new_settings: AppSettings, state: State<'_, AppState>) -> Result<(), String> {
+pub fn save_settings(app: tauri::AppHandle, new_settings: AppSettings, state: State<'_, AppState>) -> Result<(), String> {
     save_settings_internal(&new_settings)?;
+    let autolaunch = app.autolaunch();
+    if new_settings.autostart {
+        let _ = autolaunch.enable();
+    } else {
+        let _ = autolaunch.disable();
+    }
     let mut current = safe_lock(&state.settings);
     *current = new_settings;
     Ok(())

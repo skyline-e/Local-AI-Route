@@ -184,12 +184,20 @@ pub fn launch_target(spec: &TargetAppSpec, proxy: &ProxyConfig) -> Result<u32, S
         cmd.env("HTTPS_PROXY", &proxy_url);
         cmd.env("ALL_PROXY", &proxy_url);
         cmd.env("NO_PROXY", &no_proxy_env);
+        cmd.env("http_proxy", &proxy_url);
+        cmd.env("https_proxy", &proxy_url);
+        cmd.env("all_proxy", &proxy_url);
+        cmd.env("no_proxy", &no_proxy_env);
         cmd.env("NODE_USE_ENV_PROXY", "1");
     } else {
         cmd.env_remove("HTTP_PROXY");
         cmd.env_remove("HTTPS_PROXY");
         cmd.env_remove("ALL_PROXY");
         cmd.env_remove("NO_PROXY");
+        cmd.env_remove("http_proxy");
+        cmd.env_remove("https_proxy");
+        cmd.env_remove("all_proxy");
+        cmd.env_remove("no_proxy");
         cmd.env_remove("NODE_USE_ENV_PROXY");
     }
 

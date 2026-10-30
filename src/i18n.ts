@@ -53,7 +53,10 @@ export const messages = {
     btn_remove_app: "删除应用",
     confirm_remove_title: "确认移除自定义应用？",
     confirm_remove_desc: "移除后该应用将从列表中清除，配置文件将同步更新。",
+    confirm_remove_running_note: "提示：该应用当前正在运行中，移除快捷卡片不会强制终止其后台进程。",
     toast_app_removed: "已成功移除自定义应用",
+    app_probe_url: "连通性探测 URL (可选)",
+    app_probe_placeholder: "选填，默认: https://www.gstatic.com/generate_204",
   },
   "en-US": {
     app_title: "Local-AI-Route",
@@ -105,7 +108,10 @@ export const messages = {
     btn_remove_app: "Remove App",
     confirm_remove_title: "Confirm Remove Custom App?",
     confirm_remove_desc: "This custom application will be removed from the list and saved to configuration.",
+    confirm_remove_running_note: "Note: This application is currently running. Removing the card will not terminate its background process.",
     toast_app_removed: "Custom application removed successfully.",
+    app_probe_url: "Probe URL (Optional)",
+    app_probe_placeholder: "Optional, default: https://www.gstatic.com/generate_204",
   },
 };
 

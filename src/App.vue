@@ -87,10 +87,12 @@ const confirmRemoveModal = ref<{
   open: boolean;
   appId: string;
   appName: string;
+  isRunning: boolean;
 }>({
   open: false,
   appId: "",
   appName: "",
+  isRunning: false,
 });
 
 // Diagnostics Modal
@@ -105,6 +107,7 @@ const customAppForm = ref({
   name: "",
   name_en: "",
   exe_path: "",
+  probe_url: "",
   warn_unsaved: false,
 });
 
@@ -307,6 +310,8 @@ function handleAddCustomApp() {
     return;
   }
   const id = "custom-" + Date.now();
+  const probeUrl = customAppForm.value.probe_url.trim();
+  const probeUrls = probeUrl ? [probeUrl] : ["https://www.gstatic.com/generate_204"];
   const newApp: TargetAppSpec = {
     id,
     name: customAppForm.value.name.trim(),
@@ -314,7 +319,7 @@ function handleAddCustomApp() {
     builtin: false,
     exe_path: customAppForm.value.exe_path.trim(),
     proxy_enabled: true,
-    probe_urls: ["https://www.gstatic.com/generate_204"],
+    probe_urls: probeUrls,
     child_process_patterns: [],
     sidecar_cmdline_regex: "",
     warn_unsaved_on_kill: customAppForm.value.warn_unsaved,
@@ -322,14 +327,16 @@ function handleAddCustomApp() {
   settings.value.custom_apps.push(newApp);
   saveCurrentSettings();
   addModalOpen.value = false;
-  customAppForm.value = { id: "", name: "", name_en: "", exe_path: "", warn_unsaved: false };
+  customAppForm.value = { id: "", name: "", name_en: "", exe_path: "", probe_url: "", warn_unsaved: false };
 }
 
 function handlePromptRemoveCustomApp(target: TargetAppSpec) {
+  const isRunning = appStatuses.value[target.id]?.status && appStatuses.value[target.id]?.status !== "stopped";
   confirmRemoveModal.value = {
     open: true,
     appId: target.id,
     appName: currentLang.value === "en-US" && target.name_en ? target.name_en : target.name,
+    isRunning: Boolean(isRunning),
   };
 }
 
@@ -338,7 +345,7 @@ async function executeRemoveCustomApp() {
   settings.value.custom_apps = settings.value.custom_apps.filter((a) => a.id !== targetId);
   delete settings.value.targets[targetId];
   await saveCurrentSettings();
-  confirmRemoveModal.value = { open: false, appId: "", appName: "" };
+  confirmRemoveModal.value = { open: false, appId: "", appName: "", isRunning: false };
   showToast(t("toast_app_removed"), "success");
 }
 
@@ -427,6 +434,17 @@ onUnmounted(() => {
       </div>
 
       <div class="flex items-center gap-3">
+        <!-- Autostart Toggle -->
+        <label class="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300 cursor-pointer select-none px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 transition">
+          <input
+            type="checkbox"
+            v-model="settings.autostart"
+            @change="saveCurrentSettings"
+            class="rounded text-sky-600 focus:ring-sky-500 border-slate-300 dark:border-slate-600 dark:bg-slate-700 w-3.5 h-3.5 cursor-pointer"
+          />
+          <span>{{ t("autostart_label") }}</span>
+        </label>
+
         <!-- Language Switch -->
         <button
           @click="currentLang = currentLang === 'zh-CN' ? 'en-US' : 'zh-CN'; saveCurrentSettings();"
@@ -792,6 +810,16 @@ onUnmounted(() => {
             />
           </div>
 
+          <div>
+            <label class="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">{{ t("app_probe_url") }}</label>
+            <input
+              v-model="customAppForm.probe_url"
+              type="text"
+              :placeholder="t('app_probe_placeholder')"
+              class="w-full text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 p-2 focus:ring-2 focus:ring-sky-500 outline-none"
+            />
+          </div>
+
           <div class="flex items-center gap-2 pt-1">
             <input
               id="warnUnsaved"
@@ -870,6 +898,13 @@ onUnmounted(() => {
         <p class="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
           {{ confirmRemoveModal.appName }}：{{ t("confirm_remove_desc") }}
         </p>
+        <div
+          v-if="confirmRemoveModal.isRunning"
+          class="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-600 dark:text-amber-400 text-xs flex items-center gap-2"
+        >
+          <AlertTriangle class="w-4 h-4 shrink-0" />
+          <span>{{ t("confirm_remove_running_note") }}</span>
+        </div>
         <div class="flex items-center justify-end gap-2 border-t border-slate-100 dark:border-slate-700 pt-3">
           <button
             @click="confirmRemoveModal.open = false"
