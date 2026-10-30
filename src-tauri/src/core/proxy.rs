@@ -1,6 +1,6 @@
 use super::models::DEFAULT_NO_PROXY;
 use std::collections::HashSet;
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
 use std::time::Duration;
 
 pub fn split_bypass_entries(raw: &str) -> Vec<String> {
@@ -70,13 +70,30 @@ pub async fn scan_local_proxy_ports() -> Vec<u16> {
     let common_ports: &[u16] = &[
         7890, 7891, 10808, 10809, 1080, 1081, 1082, 8888, 8889, 7892, 7893, 7895, 20170, 20171,
     ];
-    let mut active = Vec::new();
 
+    let mut join_set = tokio::task::JoinSet::new();
     for &port in common_ports {
-        let addr = SocketAddr::from(([127, 0, 0, 1], port));
-        if TcpStream::connect_timeout(&addr, Duration::from_millis(60)).is_ok() {
+        join_set.spawn(async move {
+            let addr = SocketAddr::from(([127, 0, 0, 1], port));
+            if let Ok(Ok(_)) = tokio::time::timeout(
+                Duration::from_millis(60),
+                tokio::net::TcpStream::connect(addr),
+            )
+            .await
+            {
+                Some(port)
+            } else {
+                None
+            }
+        });
+    }
+
+    let mut active = Vec::new();
+    while let Some(res) = join_set.join_next().await {
+        if let Ok(Some(port)) = res {
             active.push(port);
         }
     }
+    active.sort_unstable();
     active
 }

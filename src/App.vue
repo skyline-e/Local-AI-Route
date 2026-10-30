@@ -31,6 +31,7 @@ import {
   AlertTriangle,
   AlertCircle,
   Info,
+  Trash2,
 } from "lucide-vue-next";
 
 const settings = ref<AppSettings>({
@@ -79,6 +80,17 @@ const confirmStopModal = ref<{
 }>({
   open: false,
   target: null,
+});
+
+// Confirm Remove Custom App Modal
+const confirmRemoveModal = ref<{
+  open: boolean;
+  appId: string;
+  appName: string;
+}>({
+  open: false,
+  appId: "",
+  appName: "",
 });
 
 // Diagnostics Modal
@@ -311,6 +323,23 @@ function handleAddCustomApp() {
   saveCurrentSettings();
   addModalOpen.value = false;
   customAppForm.value = { id: "", name: "", name_en: "", exe_path: "", warn_unsaved: false };
+}
+
+function handlePromptRemoveCustomApp(target: TargetAppSpec) {
+  confirmRemoveModal.value = {
+    open: true,
+    appId: target.id,
+    appName: currentLang.value === "en-US" && target.name_en ? target.name_en : target.name,
+  };
+}
+
+async function executeRemoveCustomApp() {
+  const targetId = confirmRemoveModal.value.appId;
+  settings.value.custom_apps = settings.value.custom_apps.filter((a) => a.id !== targetId);
+  delete settings.value.targets[targetId];
+  await saveCurrentSettings();
+  confirmRemoveModal.value = { open: false, appId: "", appName: "" };
+  showToast(t("toast_app_removed"), "success");
 }
 
 function copyReport() {
@@ -568,19 +597,31 @@ onUnmounted(() => {
               </span>
             </div>
 
-            <!-- Mode Switch (Proxied vs Direct) -->
-            <div class="flex items-center bg-slate-100 dark:bg-slate-900/70 p-0.5 rounded-lg border border-slate-200 dark:border-slate-700">
+            <!-- Mode Switch (Proxied vs Direct) & Actions -->
+            <div class="flex items-center gap-2">
+              <div class="flex items-center bg-slate-100 dark:bg-slate-900/70 p-0.5 rounded-lg border border-slate-200 dark:border-slate-700">
+                <button
+                  @click="!target.proxy_enabled && toggleProxyMode(target)"
+                  :class="['px-2.5 py-1 text-xs font-medium rounded-md transition', target.proxy_enabled ? 'bg-sky-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200']"
+                >
+                  {{ t("mode_proxied") }}
+                </button>
+                <button
+                  @click="target.proxy_enabled && toggleProxyMode(target)"
+                  :class="['px-2.5 py-1 text-xs font-medium rounded-md transition', !target.proxy_enabled ? 'bg-slate-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200']"
+                >
+                  {{ t("mode_direct") }}
+                </button>
+              </div>
+
+              <!-- Delete Custom App Button -->
               <button
-                @click="!target.proxy_enabled && toggleProxyMode(target)"
-                :class="['px-2.5 py-1 text-xs font-medium rounded-md transition', target.proxy_enabled ? 'bg-sky-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200']"
+                v-if="!target.builtin"
+                @click="handlePromptRemoveCustomApp(target)"
+                class="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
+                :title="t('btn_remove_app')"
               >
-                {{ t("mode_proxied") }}
-              </button>
-              <button
-                @click="target.proxy_enabled && toggleProxyMode(target)"
-                :class="['px-2.5 py-1 text-xs font-medium rounded-md transition', !target.proxy_enabled ? 'bg-slate-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200']"
-              >
-                {{ t("mode_direct") }}
+                <Trash2 class="w-4 h-4" />
               </button>
             </div>
           </div>
@@ -811,6 +852,36 @@ onUnmounted(() => {
             class="px-3.5 py-1.5 text-xs font-medium rounded-lg bg-rose-600 text-white hover:bg-rose-700 shadow-sm"
           >
             {{ t("btn_force_kill") }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirm Remove Custom App Modal -->
+    <div
+      v-if="confirmRemoveModal.open"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+    >
+      <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl border border-rose-500/30 max-w-md w-full p-6 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+        <div class="flex items-center gap-2.5 text-rose-600 dark:text-rose-400 font-bold text-base">
+          <Trash2 class="w-5 h-5" />
+          <h3>{{ t("confirm_remove_title") }}</h3>
+        </div>
+        <p class="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+          {{ confirmRemoveModal.appName }}：{{ t("confirm_remove_desc") }}
+        </p>
+        <div class="flex items-center justify-end gap-2 border-t border-slate-100 dark:border-slate-700 pt-3">
+          <button
+            @click="confirmRemoveModal.open = false"
+            class="px-3.5 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50"
+          >
+            {{ t("btn_cancel") }}
+          </button>
+          <button
+            @click="executeRemoveCustomApp"
+            class="px-4 py-1.5 text-xs font-medium rounded-lg bg-rose-600 text-white hover:bg-rose-700 shadow-sm"
+          >
+            {{ t("btn_remove_app") }}
           </button>
         </div>
       </div>

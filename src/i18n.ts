@@ -50,6 +50,10 @@ export const messages = {
     btn_force_kill: "强制结束",
     toast_auto_detect_failed: "未能在本机注册表或常用路径中找到该应用。",
     toast_fill_fields: "请填写应用名称和完整可执行文件路径！",
+    btn_remove_app: "删除应用",
+    confirm_remove_title: "确认移除自定义应用？",
+    confirm_remove_desc: "移除后该应用将从列表中清除，配置文件将同步更新。",
+    toast_app_removed: "已成功移除自定义应用",
   },
   "en-US": {
     app_title: "Local-AI-Route",
@@ -98,6 +102,10 @@ export const messages = {
     btn_force_kill: "Force Kill",
     toast_auto_detect_failed: "Application executable not found in registry or standard paths.",
     toast_fill_fields: "Please fill in application name and executable path!",
+    btn_remove_app: "Remove App",
+    confirm_remove_title: "Confirm Remove Custom App?",
+    confirm_remove_desc: "This custom application will be removed from the list and saved to configuration.",
+    toast_app_removed: "Custom application removed successfully.",
   },
 };
 

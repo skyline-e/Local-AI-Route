@@ -190,6 +190,7 @@ pub fn get_process_tcp_connections(pids: &std::collections::HashSet<u32>, proxy_
     let mut size: u32 = 0;
 
     unsafe {
+        // Query initial table size
         let _ = GetExtendedTcpTable(
             None,
             &mut size,
@@ -203,15 +204,32 @@ pub fn get_process_tcp_connections(pids: &std::collections::HashSet<u32>, proxy_
             return records;
         }
 
-        let mut buffer: Vec<u8> = vec![0; size as usize];
-        let ret = GetExtendedTcpTable(
+        // Allocate buffer with headroom to avoid race conditions during socket bursts
+        let mut buffer: Vec<u8> = vec![0; ((size as usize * 12) / 10) + 256];
+        let mut alloc_size = buffer.len() as u32;
+
+        let mut ret = GetExtendedTcpTable(
             Some(buffer.as_mut_ptr() as *mut _),
-            &mut size,
+            &mut alloc_size,
             false,
             AF_INET.0 as u32,
             TCP_TABLE_OWNER_PID_ALL,
             0,
         );
+
+        // Retry once if buffer was still insufficient
+        if ret == 122 {
+            buffer = vec![0; (alloc_size as usize) + 512];
+            alloc_size = buffer.len() as u32;
+            ret = GetExtendedTcpTable(
+                Some(buffer.as_mut_ptr() as *mut _),
+                &mut alloc_size,
+                false,
+                AF_INET.0 as u32,
+                TCP_TABLE_OWNER_PID_ALL,
+                0,
+            );
+        }
 
         if ret == 0 {
             let table = &*(buffer.as_ptr() as *const MIB_TCPTABLE_OWNER_PID);
@@ -260,7 +278,17 @@ pub fn get_process_tcp_connections(pids: &std::collections::HashSet<u32>, proxy_
 #[cfg(target_os = "windows")]
 pub fn create_desktop_shortcut(app_id: &str, app_name: &str, target_icon_exe: &str) -> Result<String, String> {
     let desktop = dirs::desktop_dir().ok_or_else(|| "Could not find desktop directory".to_string())?;
-    let link_path = desktop.join(format!("{} (Local-AI-Route).lnk", app_name));
+
+    // Filter invalid Windows filename characters to avoid OS error 123
+    let clean_app_name: String = app_name
+        .chars()
+        .map(|c| match c {
+            ':' | '*' | '?' | '"' | '<' | '>' | '|' | '/' | '\\' => '_',
+            other => other,
+        })
+        .collect();
+
+    let link_path = desktop.join(format!("{} (Local-AI-Route).lnk", clean_app_name));
 
     let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
 

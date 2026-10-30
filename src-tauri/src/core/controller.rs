@@ -32,11 +32,19 @@ pub fn inspect_app_state(sys: &System, spec: &TargetAppSpec, proxy: &ProxyConfig
     }
 
     let spec_path = Path::new(&spec.exe_path);
+    let spec_path_norm = spec.exe_path.replace('/', "\\").to_lowercase();
     let target_file_name = spec_path
         .file_name()
         .and_then(|f| f.to_str())
         .unwrap_or("")
         .to_lowercase();
+
+    // Precompile regex outside process iteration loop for optimal performance
+    let compiled_regex = if !spec.sidecar_cmdline_regex.is_empty() {
+        regex::Regex::new(&spec.sidecar_cmdline_regex).ok()
+    } else {
+        None
+    };
 
     let mut matched_pids = Vec::new();
     let mut main_cmdline = Vec::new();
@@ -47,19 +55,16 @@ pub fn inspect_app_state(sys: &System, spec: &TargetAppSpec, proxy: &ProxyConfig
         let cmd_joined = cmd.join(" ");
 
         let exe_matches = if let Some(exe) = process.exe() {
-            if exe == spec_path {
-                if !spec.sidecar_cmdline_regex.is_empty() {
-                    regex::Regex::new(&spec.sidecar_cmdline_regex)
-                        .map(|re| re.is_match(&cmd_joined))
-                        .unwrap_or(true)
+            let exe_norm = exe.to_string_lossy().replace('/', "\\").to_lowercase();
+            if exe_norm == spec_path_norm {
+                if let Some(ref re) = compiled_regex {
+                    re.is_match(&cmd_joined)
                 } else {
                     true
                 }
             } else if exe.file_name().and_then(|f| f.to_str()).map(|s| s.to_lowercase()) == Some(target_file_name.clone()) {
-                if !spec.sidecar_cmdline_regex.is_empty() {
-                    regex::Regex::new(&spec.sidecar_cmdline_regex)
-                        .map(|re| re.is_match(&cmd_joined))
-                        .unwrap_or(false)
+                if let Some(ref re) = compiled_regex {
+                    re.is_match(&cmd_joined)
                 } else {
                     false
                 }
@@ -68,12 +73,14 @@ pub fn inspect_app_state(sys: &System, spec: &TargetAppSpec, proxy: &ProxyConfig
             }
         } else {
             let name_matches = p_name == target_file_name;
-            if name_matches && !spec.sidecar_cmdline_regex.is_empty() {
-                regex::Regex::new(&spec.sidecar_cmdline_regex)
-                    .map(|re| re.is_match(&cmd_joined))
-                    .unwrap_or(false)
+            if name_matches {
+                if let Some(ref re) = compiled_regex {
+                    re.is_match(&cmd_joined)
+                } else {
+                    true
+                }
             } else {
-                name_matches
+                false
             }
         };
 
