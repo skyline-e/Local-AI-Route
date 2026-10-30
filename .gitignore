@@ -1,0 +1,20 @@
+# Dependencies & Build artifacts
+node_modules/
+dist/
+build/
+release_dist/
+*.zip
+
+# Rust
+src-tauri/target/
+
+# Runtime portable data & logs
+data/
+portable.flag
+instance.json
+*.log
+.trash*
+
+# OS specific
+.DS_Store
+Thumbs.db

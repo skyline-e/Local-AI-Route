@@ -1,0 +1,39 @@
+[package]
+name = "local-ai-route"
+version = "0.2.0"
+description = "Process-scoped local proxy launcher and connection diagnostics for AI desktop apps"
+authors = ["Local-AI-Route Team"]
+edition = "2021"
+
+[lib]
+name = "local_ai_route_lib"
+crate-type = ["lib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["socks", "rustls-tls", "json"] }
+sysinfo = "0.33"
+chrono = "0.4"
+regex = "1"
+dirs = "6"
+tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock"
+] }
+winreg = "0.52"
+mslnk = "0.1"
