@@ -10,20 +10,22 @@
   <img src="https://img.shields.io/badge/Vue_3-4FC08D?style=flat-square&logo=vue.js&logoColor=white" alt="Vue 3" />
   <img src="https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=flat-square&logo=tailwind-css&logoColor=white" alt="Tailwind CSS" />
   <img src="https://img.shields.io/badge/Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Windows" />
+  <img src="https://img.shields.io/badge/macOS-000000?style=flat-square&logo=apple&logoColor=white" alt="macOS" />
+  <img src="https://img.shields.io/badge/Linux-FCC624?style=flat-square&logo=linux&logoColor=black" alt="Linux" />
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="MIT License" />
 </p>
 
 **Local-AI-Route** 是一款专为桌面 AI 应用打造的轻量级、免全局 TUN、免改系统代理的**进程级本地代理启动与管理工具**。开箱**原生深度适配**：
 
-- 🤖 **ChatGPT**（兼容 Microsoft Store 商店版与独立安装包）
-- 🧠 **Claude**（兼容 MSIX 商店版、Squirrel 增量更新包与标准安装包）
+- 🤖 **ChatGPT**（兼容 Windows 商店/独立安装包、macOS App Bundle、Linux 桌面客户端）
+- 🧠 **Claude**（兼容 Windows MSIX/Squirrel、macOS App Bundle、Linux 桌面端）
 - 🌌 **Antigravity 桌面版**
-- ⚡ **Antigravity IDE**（精确区分注册表条目，专项保障 LSP 子进程代理继承）
+- ⚡ **Antigravity IDE**（精确区分注册表与应用标识，专项保障 LSP 子进程代理继承）
 - 🧩 **自定义扩展**：一键添加任意 Chromium / Electron 类桌面 AI 应用（如 Cursor、Windsurf 等）
 
 > [!NOTE]
 > - 本工具不提供任何代理节点或网络接入服务，仅将您本机已运行的本地代理（如 Clash / Mihomo / FlClash / v2rayN）按进程级参数与环境变量注入兼容的桌面 AI 应用。
-> - **平台支持说明**：暂只测试过 Windows 平台可用，若想在其他平台使用请自行编译。
+> - **跨平台支持**：深度适配 Windows、macOS (Apple Silicon & Intel) 以及主流 Linux 发行版，提供原生的进程级代理注入、信号管理、四维连接诊断与桌面快捷方式生成。
 
 <p align="center">
   <img src="docs/image.png" alt="Local-AI-Route 软件界面截图" width="850" />
@@ -54,28 +56,42 @@
 
 ## 快速开始
 
-### 方式一：使用绿色便携包（推荐，开箱即用）
+### 方式一：从 Release 下载（开箱即用）
 
-1. 下载解压 `Local-AI-Route-<version>-windows-x64-portable.zip` 到任意目录。
-2. 确保本地代理客户端（Clash / Mihomo 等）已启动，运行 `Local-AI-Route.exe`。
-3. 点击 **「扫描本地端口」** 快捷填入代理端口（或手动修改后点击 **「保存配置」**）。
-4. 在对应卡片点击 **「启动」**（也可点击 **「桌面快捷方式」**，之后直接双击桌面图标静默带代理拉起应用）。
+从 [GitHub Releases](../../releases) 获取对应平台的发布包：
+- 🪟 **Windows**：下载解压免安装便携包 `Local-AI-Route-<version>-windows-x64-portable.zip` 或安装包 `Local-AI-Route_<version>_x64-setup.exe`。
+- 🍎 **macOS**：下载 `Local-AI-Route_<version>_universal.dmg`（通用二进制，原生支持 Apple Silicon M 系列与 Intel 芯片），打开后拖拽至 Applications 目录。
+- 🐧 **Linux**：下载 `.deb` 安装包（`sudo dpkg -i ...`）或 `.AppImage` 独立运行包（赋予执行权限 `chmod +x` 后直接运行）。
 
-### 方式二：从源码运行与构建（Rust + Node.js）
+运行使用：
+1. 确保本地代理客户端（Clash / Mihomo / FlClash / v2rayN 等）已启动。
+2. 运行 `Local-AI-Route`，点击 **「扫描本地端口」** 快捷填入代理端口（或手动输入后点击 **「保存配置」**）。
+3. 在对应卡片点击 **「启动」**（也可点击 **「桌面快捷方式」**，之后直接通过桌面图标静默带代理启动应用）。
+
+### 方式二：从源码运行与跨平台构建（Rust + Node.js）
 
 #### 环境准备
-- **Rust Toolchain**: `stable`（推荐 `stable-x86_64-pc-windows-gnu` 或 `msvc`）
+- **Rust Toolchain**: `stable`
 - **Node.js**: v18+ & **pnpm**: v9+
+- **Linux 系统依赖（Ubuntu/Debian）**：
+  ```bash
+  sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libxdo-dev libfuse2
+  ```
 
-```powershell
+#### 构建命令
+```bash
 # 1. 安装前端依赖
 pnpm install
 
 # 2. 启动开发模式（热重载界面 + Rust 后端）
 pnpm tauri dev
 
-# 3. 构建 Windows x64 独立绿色发布包
+# 3. 生产发布包构建
+# Windows: 构建独立绿色便携发布包
 .\scripts\build_windows.ps1
+
+# macOS / Linux: 构建原生系统安装包
+pnpm tauri build
 ```
 
 ---

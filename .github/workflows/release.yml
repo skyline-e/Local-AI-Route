@@ -46,7 +46,7 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libxdo-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libxdo-dev libfuse2
 
       - name: Install frontend dependencies
         run: pnpm install --no-frozen-lockfile
@@ -56,6 +56,35 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
-          releaseName: ${{ startsWith(github.ref, 'refs/tags/v') && format('Local-AI-Route {0}', github.ref_name) || '' }}
+          tagName: v__VERSION__
+          releaseName: 'Local-AI-Route v__VERSION__'
           args: ${{ matrix.args }}
+
+      - name: Package & Upload Windows Portable ZIP
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tauriConf = Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json
+          $appVer = $tauriConf.version
+          $distDir = "release_dist"
+          if (Test-Path $distDir) { Remove-Item -Recurse -Force $distDir }
+          New-Item -ItemType Directory -Path $distDir | Out-Null
+
+          Copy-Item "src-tauri/target/release/local-ai-route.exe" "$distDir/Local-AI-Route.exe"
+          if (Test-Path "src-tauri/target/release/WebView2Loader.dll") {
+            Copy-Item "src-tauri/target/release/WebView2Loader.dll" "$distDir/WebView2Loader.dll"
+          }
+
+          New-Item -ItemType File -Path "$distDir/portable.flag" | Out-Null
+          New-Item -ItemType Directory -Path "$distDir/data" | Out-Null
+          New-Item -ItemType File -Path "$distDir/data/.gitkeep" | Out-Null
+
+          $zipPath = "Local-AI-Route-v$appVer-windows-x64-portable.zip"
+          if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
+          Compress-Archive -Path "$distDir/*" -DestinationPath $zipPath -Force
+
+          # Upload portable zip to GitHub release
+          $tag = "v$appVer"
+          gh release upload $tag $zipPath --repo ${{ github.repository }} --clobber

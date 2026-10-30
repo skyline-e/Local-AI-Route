@@ -55,7 +55,9 @@ if (Test-Path $releaseExe) {
     New-Item -ItemType Directory -Path $dataDir | Out-Null
     New-Item -ItemType File -Path (Join-Path $dataDir ".gitkeep") | Out-Null
 
-    $zipFile = Join-Path $projectRoot "Local-AI-Route-v0.2.1-windows-x64-portable.zip"
+    $tauriConf = Get-Content (Join-Path $projectRoot "src-tauri\tauri.conf.json") -Raw | ConvertFrom-Json
+    $appVer = $tauriConf.version
+    $zipFile = Join-Path $projectRoot "Local-AI-Route-v$appVer-windows-x64-portable.zip"
     if (Test-Path $zipFile) { Remove-Item -Force $zipFile }
     Compress-Archive -Path "$distDir\*" -DestinationPath $zipFile
 

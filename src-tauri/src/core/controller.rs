@@ -50,14 +50,44 @@ pub fn extract_proxy_arg(cmd: &[String]) -> Option<String> {
 }
 
 pub fn is_executable_present(path: &Path) -> bool {
-    path.is_file() || std::fs::symlink_metadata(path).map(|m| !m.is_dir()).unwrap_or(false)
+    #[cfg(target_os = "macos")]
+    {
+        if path.is_dir()
+            && (path.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("app"))
+                || path.join("Contents/MacOS").is_dir())
+        {
+            let macos_dir = path.join("Contents").join("MacOS");
+            if macos_dir.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(macos_dir) {
+                    return entries.filter_map(|e| e.ok()).any(|e| e.path().is_file());
+                }
+            }
+        }
+    }
+
+    if path.is_file() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = path.metadata() {
+                if meta.permissions().mode() & 0o111 == 0 {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    std::fs::symlink_metadata(path).map(|m| !m.is_dir()).unwrap_or(false)
 }
 
 fn is_matching_exe_name(actual_name: &str, target_name: &str) -> bool {
-    actual_name == target_name
+    let clean_actual = actual_name.strip_suffix(".exe").unwrap_or(actual_name);
+    let clean_target = target_name.strip_suffix(".exe").unwrap_or(target_name);
+    clean_actual == clean_target
         || matches!(
-            (actual_name, target_name),
-            ("chatgpt.exe", "chatgpt-desktop.exe") | ("chatgpt-desktop.exe", "chatgpt.exe")
+            (clean_actual, clean_target),
+            ("chatgpt", "chatgpt-desktop") | ("chatgpt-desktop", "chatgpt")
         )
 }
 
@@ -73,6 +103,13 @@ fn resolve_squirrel_root(path: &Path) -> Option<String> {
 }
 
 fn is_same_app_family(spec_path: &Path, spec_path_norm: &str, exe_path: &Path, exe_norm: &str) -> bool {
+    // 0. Canonical path equivalence (e.g. symlinks in /usr/bin -> /opt on Linux)
+    if let (Ok(p1), Ok(p2)) = (std::fs::canonicalize(spec_path), std::fs::canonicalize(exe_path)) {
+        if p1 == p2 {
+            return true;
+        }
+    }
+
     // 1. MSIX Execution Alias (%LOCALAPPDATA%\Microsoft\WindowsApps\*.exe) <-> PackageRootFolder (C:\Program Files\WindowsApps\...)
     if spec_path_norm.contains("\\windowsapps\\") && exe_norm.contains("\\windowsapps\\") {
         return true;
@@ -115,8 +152,9 @@ pub fn inspect_app_state(sys: &System, spec: &TargetAppSpec, proxy: &ProxyConfig
         };
     }
 
-    let spec_path = Path::new(&spec.exe_path);
-    let spec_path_norm = spec.exe_path.replace('/', "\\").to_lowercase();
+    let effective_exe_str = crate::platforms::resolve_executable_for_launch(&spec.exe_path);
+    let spec_path = Path::new(&effective_exe_str);
+    let spec_path_norm = effective_exe_str.replace('/', "\\").to_lowercase();
     let target_file_name = spec_path
         .file_name()
         .and_then(|f| f.to_str())
@@ -291,10 +329,11 @@ pub fn launch_target(spec: &TargetAppSpec, proxy: &ProxyConfig) -> Result<u32, S
         return Err(format!("Target executable does not exist: {}", spec.exe_path));
     }
 
-    let mut cmd = Command::new(&spec.exe_path);
-    let exe_low = spec.exe_path.replace('/', "\\").to_lowercase();
+    let resolved_exe = crate::platforms::resolve_executable_for_launch(&spec.exe_path);
+    let mut cmd = Command::new(&resolved_exe);
+    let exe_low = resolved_exe.replace('/', "\\").to_lowercase();
     if !exe_low.contains("\\microsoft\\windowsapps\\") {
-        if let Some(parent) = Path::new(&spec.exe_path).parent() {
+        if let Some(parent) = Path::new(&resolved_exe).parent() {
             if parent.is_dir() {
                 cmd.current_dir(parent);
             }

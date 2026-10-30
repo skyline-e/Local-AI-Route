@@ -6,6 +6,11 @@ use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ};
 use winreg::RegKey;
 
 #[cfg(target_os = "windows")]
+pub fn resolve_executable_for_launch(path: &str) -> String {
+    path.to_string()
+}
+
+#[cfg(target_os = "windows")]
 pub fn discover_target_executable(app_id: &str) -> Option<String> {
     let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
     let prog_files = std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());

@@ -10,20 +10,22 @@
   <img src="https://img.shields.io/badge/Vue_3-4FC08D?style=flat-square&logo=vue.js&logoColor=white" alt="Vue 3" />
   <img src="https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=flat-square&logo=tailwind-css&logoColor=white" alt="Tailwind CSS" />
   <img src="https://img.shields.io/badge/Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Windows" />
+  <img src="https://img.shields.io/badge/macOS-000000?style=flat-square&logo=apple&logoColor=white" alt="macOS" />
+  <img src="https://img.shields.io/badge/Linux-FCC624?style=flat-square&logo=linux&logoColor=black" alt="Linux" />
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="MIT License" />
 </p>
 
 **Local-AI-Route** is a lightweight, zero-global-TUN, process-scoped proxy launcher and four-dimensional connection diagnostics tool designed for desktop AI applications. It natively supports:
 
-- 🤖 **ChatGPT** (compatible with Microsoft Store and standalone packages)
-- 🧠 **Claude** (compatible with MSIX, Squirrel incremental installs, and standard packages)
+- 🤖 **ChatGPT** (compatible with Windows Store/standalone, macOS App Bundles, and Linux desktop clients)
+- 🧠 **Claude** (compatible with Windows MSIX/Squirrel, macOS App Bundles, and Linux desktop clients)
 - 🌌 **Antigravity Desktop**
-- ⚡ **Antigravity IDE** (strict registry disambiguation & dedicated LSP proxy inheritance checks)
+- ⚡ **Antigravity IDE** (strict app disambiguation & dedicated LSP proxy inheritance checks)
 - 🧩 **Custom Extensible**: One-click addition of any Chromium / Electron-based desktop AI app (e.g. Cursor, Windsurf)
 
 > [!NOTE]
 > - This tool does not provide any proxy servers or network services. It merely injects your running local proxy (e.g. Clash / Mihomo / FlClash / v2rayN) into compatible desktop AI applications via process arguments and environment variables.
-> - **Platform Notice**: Currently, only the Windows platform has been tested and verified. If you wish to use it on other platforms (macOS / Linux), please compile from source yourself.
+> - **Cross-Platform Support**: Natively adapted for Windows, macOS (Apple Silicon & Intel), and major Linux distributions with process-level proxy injection, signal management, 4D connection diagnostics, and desktop shortcut generation.
 
 <p align="center">
   <img src="docs/image.png" alt="Local-AI-Route Preview" width="850" />
@@ -56,23 +58,42 @@
 
 ## Quick Start
 
-### Option 1: Green Portable ZIP (Recommended)
+### Option 1: Download from Releases (Ready-to-Use)
 
-1. Unzip `Local-AI-Route-<version>-windows-x64-portable.zip` to any folder.
-2. Launch `Local-AI-Route.exe` while your local proxy client is running.
-3. Click **"Scan Local Ports"** to select your proxy port, then click **"Launch"** on the target card.
+Grab the appropriate package for your system from [GitHub Releases](../../releases):
+- 🪟 **Windows**: Download and extract the portable ZIP `Local-AI-Route-<version>-windows-x64-portable.zip` or install via `Local-AI-Route_<version>_x64-setup.exe`.
+- 🍎 **macOS**: Download `Local-AI-Route_<version>_universal.dmg` (Universal binary with native Apple Silicon M-series & Intel support) and drag to Applications.
+- 🐧 **Linux**: Download the `.deb` package (`sudo dpkg -i ...`) or standalone `.AppImage` (`chmod +x` and run directly).
+
+Usage:
+1. Ensure your local proxy client (Clash, Mihomo, FlClash, v2rayN, etc.) is active.
+2. Launch `Local-AI-Route` and click **"Scan Local Ports"** to detect your local proxy port (or configure manually and click **"Save Config"**).
+3. Click **"Launch"** on the desired application card (or generate a **"Desktop Shortcut"** to start the app with proxy directly from your desktop).
 
 ### Option 2: Build from Source (Rust & Node.js)
 
-```powershell
+#### Prerequisites
+- **Rust Toolchain**: `stable`
+- **Node.js**: v18+ & **pnpm**: v9+
+- **Linux Build Dependencies (Ubuntu/Debian)**:
+  ```bash
+  sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libxdo-dev libfuse2
+  ```
+
+#### Commands
+```bash
 # 1. Install frontend dependencies
 pnpm install
 
 # 2. Start dev mode (Hot-reload UI + Rust backend)
 pnpm tauri dev
 
-# 3. Build standalone Windows x64 release package
+# 3. Build production package
+# Windows: build standalone portable release package
 .\scripts\build_windows.ps1
+
+# macOS / Linux: build native packages (.dmg / .app / .deb / .AppImage)
+pnpm tauri build
 ```
 
 ---

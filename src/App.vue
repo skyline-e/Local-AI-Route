@@ -448,7 +448,7 @@ onUnmounted(() => {
         <div>
           <h1 class="text-xl font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
             {{ t("app_title") }}
-            <span class="text-xs px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300 font-mono">v0.2.1 (Tauri)</span>
+            <span class="text-xs px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300 font-mono">v0.2.2 (Tauri)</span>
           </h1>
           <p class="text-xs text-slate-500 dark:text-slate-400">{{ t("app_subtitle") }}</p>
         </div>
