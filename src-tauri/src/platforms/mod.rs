@@ -57,3 +57,18 @@ pub fn create_desktop_shortcut(app_id: &str, app_name: &str, target_icon_exe: &s
         Err("Desktop shortcut creation is currently supported on Windows".into())
     }
 }
+
+pub fn show_native_message_box(title: &str, message: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        windows::show_native_message_box(title, message);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::show_native_message_box(title, message);
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        eprintln!("{}: {}", title, message);
+    }
+}

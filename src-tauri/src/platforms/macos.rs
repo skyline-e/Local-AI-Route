@@ -45,3 +45,8 @@ pub fn request_graceful_close(pids: &[u32]) -> bool {
 pub fn get_process_tcp_connections(_pids: &std::collections::HashSet<u32>, _proxy_port: u16) -> Vec<String> {
     Vec::new()
 }
+
+#[cfg(target_os = "macos")]
+pub fn show_native_message_box(title: &str, message: &str) {
+    eprintln!("{}: {}", title, message);
+}

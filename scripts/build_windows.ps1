@@ -37,7 +37,13 @@ if (Test-Path $releaseExe) {
     if (Test-Path $distDir) { Remove-Item -Recurse -Force $distDir }
     New-Item -ItemType Directory -Path $distDir | Out-Null
 
+    if (Get-Command strip -ErrorAction SilentlyContinue) {
+        Write-Host "==> Stripping symbols for release..." -ForegroundColor Cyan
+        & strip $releaseExe
+    }
+
     Copy-Item $releaseExe (Join-Path $distDir "Local-AI-Route.exe")
+    New-Item -ItemType File -Path (Join-Path $distDir "portable.flag") | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $distDir "data") | Out-Null
 
     $zipFile = Join-Path $projectRoot "Local-AI-Route-v0.2.0-windows-x64-portable.zip"

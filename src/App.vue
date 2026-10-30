@@ -732,17 +732,17 @@ onUnmounted(() => {
           </button>
         </div>
 
-        <div class="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
+        <div class="space-y-3 max-h-[60vh] overflow-y-auto pr-1 select-text">
           <div
             v-for="(item, idx) in activeDiagReport.items"
             :key="idx"
-            class="p-3.5 rounded-lg border border-slate-200 dark:border-slate-700/80 bg-slate-50 dark:bg-slate-900/40 space-y-1.5"
+            class="p-3.5 rounded-lg border border-slate-200 dark:border-slate-700/80 bg-slate-50 dark:bg-slate-900/40 space-y-1.5 select-text"
           >
             <div class="flex items-center justify-between">
-              <span class="text-xs font-bold text-slate-800 dark:text-slate-200">{{ item.title }}</span>
+              <span class="text-xs font-bold text-slate-800 dark:text-slate-200 select-text">{{ item.title }}</span>
               <span
                 :class="[
-                  'text-[10px] font-mono px-2 py-0.5 rounded font-bold uppercase',
+                  'text-[10px] font-mono px-2 py-0.5 rounded font-bold uppercase select-none',
                   item.status === 'pass' ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400' : '',
                   item.status === 'warn' ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400' : '',
                   item.status === 'fail' ? 'bg-rose-500/20 text-rose-600 dark:text-rose-400' : '',
@@ -752,9 +752,9 @@ onUnmounted(() => {
                 {{ item.status }}
               </span>
             </div>
-            <p class="text-xs text-slate-600 dark:text-slate-400">{{ item.summary }}</p>
-            <ul v-if="item.details.length" class="text-[11px] font-mono text-slate-500 dark:text-slate-400 space-y-0.5 mt-1 border-t border-slate-200/50 dark:border-slate-800 pt-1.5">
-              <li v-for="(d, dIdx) in item.details" :key="dIdx">{{ d }}</li>
+            <p class="text-xs text-slate-600 dark:text-slate-400 select-text">{{ item.summary }}</p>
+            <ul v-if="item.details.length" class="text-[11px] font-mono text-slate-500 dark:text-slate-400 space-y-0.5 mt-1 border-t border-slate-200/50 dark:border-slate-800 pt-1.5 select-text">
+              <li v-for="(d, dIdx) in item.details" :key="dIdx" class="select-text">{{ d }}</li>
             </ul>
           </div>
         </div>

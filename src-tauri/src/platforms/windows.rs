@@ -301,3 +301,15 @@ pub fn create_desktop_shortcut(app_id: &str, app_name: &str, target_icon_exe: &s
 
     Ok(link_path.to_string_lossy().to_string())
 }
+
+#[cfg(target_os = "windows")]
+pub fn show_native_message_box(title: &str, message: &str) {
+    use windows::core::HSTRING;
+    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONWARNING, MB_OK};
+
+    let title_h = HSTRING::from(title);
+    let message_h = HSTRING::from(message);
+    unsafe {
+        let _ = MessageBoxW(None, &message_h, &title_h, MB_OK | MB_ICONWARNING);
+    }
+}

@@ -33,7 +33,22 @@ pub fn run() {
                     target.exe_path = detected;
                 }
             }
-            let _ = launch_target(&target, &initial_settings.proxy);
+            if target.exe_path.is_empty() {
+                crate::platforms::show_native_message_box(
+                    "Local-AI-Route 启动失败",
+                    &format!("未检测到应用「{}」的可执行文件路径。\n\n请先打开 Local-AI-Route 主窗口完成路径配置。", target.name),
+                );
+            } else if let Err(e) = launch_target(&target, &initial_settings.proxy) {
+                crate::platforms::show_native_message_box(
+                    "Local-AI-Route 启动失败",
+                    &format!("启动目标应用「{}」失败: {}\n\n请检查路径是否正确或文件是否被占用/拦截。", target.name, e),
+                );
+            }
+        } else {
+            crate::platforms::show_native_message_box(
+                "Local-AI-Route 启动失败",
+                &format!("未在配置中找到目标应用 ID: {}\n\n请打开 Local-AI-Route 主窗口检查应用列表。", target_id),
+            );
         }
         return;
     }
