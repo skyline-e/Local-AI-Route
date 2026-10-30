@@ -1,10 +1,13 @@
-use crate::core::controller::{inspect_app_state, launch_target, stop_target};
+use crate::core::controller::{
+    ensure_stopped_before_relaunch, inspect_app_state, is_executable_present, launch_target, stop_target,
+};
 use crate::core::diagnostics::run_diagnostics as run_diag_internal;
-use crate::core::models::{AppRuntimeState, AppSettings, DiagReport, TargetAppSpec, TargetOverride};
+use crate::core::models::{AppRuntimeState, AppSettings, DiagReport, RunStatus, TargetAppSpec, TargetOverride};
 use crate::core::presets::{find_target_spec, get_effective_targets as get_effective_targets_internal};
 use crate::core::proxy::scan_local_proxy_ports as scan_ports_internal;
 use crate::core::storage::save_settings as save_settings_internal;
 use crate::platforms::{create_desktop_shortcut, discover_target_executable};
+use std::path::Path;
 use std::sync::Mutex;
 use sysinfo::{ProcessesToUpdate, System};
 use tauri::State;
@@ -29,10 +32,10 @@ pub fn get_settings(app: tauri::AppHandle, state: State<'_, AppState>) -> AppSet
         settings.autostart = enabled;
     }
 
-    // Auto-detect built-in targets if paths are currently empty
+    // Auto-detect built-in targets if paths are currently empty or stale after app auto-update
     for preset in crate::core::presets::builtin_presets() {
         let entry = settings.targets.entry(preset.id.clone()).or_insert_with(TargetOverride::default);
-        if entry.exe_path.is_empty() {
+        if entry.exe_path.is_empty() || !is_executable_present(Path::new(&entry.exe_path)) {
             if let Some(detected) = discover_target_executable(&preset.id) {
                 entry.exe_path = detected;
             }
@@ -87,13 +90,58 @@ pub fn get_app_statuses(state: State<'_, AppState>) -> Vec<AppRuntimeState> {
     statuses
 }
 
-#[tauri::command]
-pub fn launch_app(app_id: String, state: State<'_, AppState>) -> Result<u32, String> {
-    let settings = safe_lock(&state.settings);
-    let target = find_target_spec(&settings, &app_id)
+fn resolve_and_heal_target(settings: &mut AppSettings, app_id: &str) -> Result<TargetAppSpec, String> {
+    let mut target = find_target_spec(settings, app_id)
         .ok_or_else(|| format!("Target app '{}' not found", app_id))?;
 
-    launch_target(&target, &settings.proxy)
+    if target.builtin && (target.exe_path.is_empty() || !is_executable_present(Path::new(&target.exe_path))) {
+        if let Some(detected) = discover_target_executable(&target.id) {
+            target.exe_path = detected.clone();
+            let entry = settings.targets.entry(target.id.clone()).or_insert_with(TargetOverride::default);
+            entry.exe_path = detected;
+            let _ = save_settings_internal(settings);
+        }
+    }
+
+    Ok(target)
+}
+
+#[tauri::command]
+pub async fn launch_app(
+    app_id: String,
+    force_restart: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<u32, String> {
+    let (target, proxy, pids_to_restart) = {
+        let mut settings = safe_lock(&state.settings);
+        let target = resolve_and_heal_target(&mut settings, &app_id)?;
+
+        let mut sys = safe_lock(&state.sys);
+        sys.refresh_processes(ProcessesToUpdate::All, true);
+        let runtime = inspect_app_state(&sys, &target, &settings.proxy);
+        let pids = if matches!(runtime.status, RunStatus::RestartNeeded | RunStatus::RunningUnproxied) {
+            runtime.pids
+        } else {
+            vec![]
+        };
+
+        (target, settings.proxy.clone(), pids)
+    };
+
+    if !pids_to_restart.is_empty() {
+        let allow_force_kill = force_restart.unwrap_or(!target.warn_unsaved_on_kill);
+        let stopped = tokio::task::spawn_blocking(move || {
+            ensure_stopped_before_relaunch(&pids_to_restart, allow_force_kill)
+        })
+        .await
+        .map_err(|e| format!("Restart task error: {}", e))?;
+
+        if !stopped {
+            return Err("已向应用发送优雅关闭信号，请先在应用内确认保存文件并退出后再点击启动。".into());
+        }
+    }
+
+    launch_target(&target, &proxy)
 }
 
 #[tauri::command]
@@ -112,9 +160,8 @@ pub fn stop_app(app_id: String, force: bool, state: State<'_, AppState>) -> Resu
 #[tauri::command]
 pub async fn run_diagnostics(app_id: String, state: State<'_, AppState>) -> Result<DiagReport, String> {
     let (target, proxy) = {
-        let settings = safe_lock(&state.settings);
-        let target = find_target_spec(&settings, &app_id)
-            .ok_or_else(|| format!("Target app '{}' not found", app_id))?;
+        let mut settings = safe_lock(&state.settings);
+        let target = resolve_and_heal_target(&mut settings, &app_id)?;
         (target, settings.proxy.clone())
     };
 
@@ -123,9 +170,8 @@ pub async fn run_diagnostics(app_id: String, state: State<'_, AppState>) -> Resu
 
 #[tauri::command]
 pub fn create_shortcut(app_id: String, state: State<'_, AppState>) -> Result<String, String> {
-    let settings = safe_lock(&state.settings);
-    let target = find_target_spec(&settings, &app_id)
-        .ok_or_else(|| format!("Target app '{}' not found", app_id))?;
+    let mut settings = safe_lock(&state.settings);
+    let target = resolve_and_heal_target(&mut settings, &app_id)?;
 
     create_desktop_shortcut(&target.id, &target.name, &target.exe_path)
 }

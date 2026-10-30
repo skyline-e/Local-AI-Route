@@ -14,7 +14,7 @@
 
 | 能力维度 | Local-Route-Launcher (v1.3.0) | EasyAntigravity (v4.0.4 Lite) | Local-AI-Route 合并方案 (Tauri v2) |
 | :--- | :--- | :--- | :--- |
-| **目标应用** | ChatGPT 桌面端（及商店 Codex） | Antigravity 桌面版 (Hub) + Antigravity IDE | **三大内置预设（ChatGPT APP、Antigravity 桌面版、Antigravity IDE）+ 支持一键添加任意 Chromium/Electron 自定义应用** |
+| **目标应用** | ChatGPT 桌面端（及商店 Codex） | Antigravity 桌面版 (Hub) + Antigravity IDE | **四大内置预设（ChatGPT APP、Claude APP、Antigravity 桌面版、Antigravity IDE）+ 支持一键添加任意 Chromium/Electron 自定义应用** |
 | **并发管理** | 单目标管理 | 同一时间仅激活单一目标会话 | **多应用并列卡片，支持同时运行、独立启停与独立“走代理 / 直连”开关** |
 | **代理协议与端口** | 仅无认证 HTTP（Host + Port） | 仅本机 HTTP 端口 + 常用端口快捷检测 | **全局共享代理配置，支持 `HTTP` 与 `SOCKS5`、本地常见代理端口扫描填入、可编辑 `NO_PROXY` 绕过列表** |
 | **连接诊断** | 隧道探测 + 启动参数校验 + 进程树 TCP 快照 | 仅基础端口检测与启动日志 | **四维精细化诊断：按应用定制目标域名探测 + 主进程参数校验 + Antigravity `language_server` 子进程环境变量校验 + 进程树 TCP 快照（脱敏导出）** |
@@ -140,5 +140,5 @@ local_ai_route/
 
 ## 5. 验收标准与交付物
 
-- **绿色便携构建包**：`Local-AI-Route-v0.2.0-windows-x64-portable.zip`（内含独立 `Local-AI-Route.exe` 与 `data/` 目录）。
+- **绿色便携构建包**：`Local-AI-Route-v0.2.1-windows-x64-portable.zip`（内含独立 `Local-AI-Route.exe` 与 `data/` 目录）。
 - **零依赖运行**：解压即用，无需用户安装 Python、Node.js 或额外的 Visual C++ 运行库。

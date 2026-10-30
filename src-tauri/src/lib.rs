@@ -3,11 +3,13 @@ pub mod core;
 pub mod platforms;
 
 use commands::AppState;
-use core::controller::launch_target;
+use core::controller::{ensure_stopped_before_relaunch, inspect_app_state, is_executable_present, launch_target};
+use core::models::{RunStatus, TargetOverride};
 use core::presets::find_target_spec;
-use core::storage::load_settings;
+use core::storage::{load_settings, save_settings};
+use std::path::Path;
 use std::sync::Mutex;
-use sysinfo::System;
+use sysinfo::{ProcessesToUpdate, System};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, WindowEvent};
@@ -23,14 +25,20 @@ pub fn run() {
         }
     }
 
-    let initial_settings = load_settings();
+    let mut initial_settings = load_settings();
 
     // If --launch <app_id> was requested via CLI / desktop shortcut
     if let Some(target_id) = launch_target_id {
         if let Some(mut target) = find_target_spec(&initial_settings, &target_id) {
-            if target.exe_path.is_empty() {
+            if target.builtin && (target.exe_path.is_empty() || !is_executable_present(Path::new(&target.exe_path))) {
                 if let Some(detected) = crate::platforms::discover_target_executable(&target.id) {
-                    target.exe_path = detected;
+                    target.exe_path = detected.clone();
+                    let entry = initial_settings
+                        .targets
+                        .entry(target.id.clone())
+                        .or_insert_with(TargetOverride::default);
+                    entry.exe_path = detected;
+                    let _ = save_settings(&initial_settings);
                 }
             }
             if target.exe_path.is_empty() {
@@ -38,11 +46,21 @@ pub fn run() {
                     "Local-AI-Route 启动失败",
                     &format!("未检测到应用「{}」的可执行文件路径。\n\n请先打开 Local-AI-Route 主窗口完成路径配置。", target.name),
                 );
-            } else if let Err(e) = launch_target(&target, &initial_settings.proxy) {
-                crate::platforms::show_native_message_box(
-                    "Local-AI-Route 启动失败",
-                    &format!("启动目标应用「{}」失败: {}\n\n请检查路径是否正确或文件是否被占用/拦截。", target.name, e),
-                );
+            } else {
+                if !target.warn_unsaved_on_kill {
+                    let mut sys = System::new();
+                    sys.refresh_processes(ProcessesToUpdate::All, true);
+                    let runtime = inspect_app_state(&sys, &target, &initial_settings.proxy);
+                    if matches!(runtime.status, RunStatus::RestartNeeded | RunStatus::RunningUnproxied) {
+                        ensure_stopped_before_relaunch(&runtime.pids, true);
+                    }
+                }
+                if let Err(e) = launch_target(&target, &initial_settings.proxy) {
+                    crate::platforms::show_native_message_box(
+                        "Local-AI-Route 启动失败",
+                        &format!("启动目标应用「{}」失败: {}\n\n请检查路径是否正确或文件是否被占用/拦截。", target.name, e),
+                    );
+                }
             }
         } else {
             crate::platforms::show_native_message_box(

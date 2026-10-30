@@ -13,8 +13,8 @@
 ## Key Features
 
 - **First-Class Presets + Custom App Extensions**:
-  - Out-of-the-box auto-detection for **ChatGPT APP** (compatible with Microsoft Store `OpenAI.ChatGPT` / `OpenAI.Codex` MSIX and standalone installers), **Antigravity Desktop**, and **Antigravity IDE** (with strict registry disambiguation).
-  - One-click addition of any Chromium / Electron-based desktop AI app (e.g. Claude Desktop, Cursor).
+  - Out-of-the-box auto-detection for **ChatGPT APP** (compatible with Microsoft Store `OpenAI.ChatGPT` / `OpenAI.Codex` MSIX and standalone installers), **Claude APP** (compatible with MSIX packages, `%LOCALAPPDATA%\AnthropicClaude\app-*` Squirrel installs, and standard installers), **Antigravity Desktop**, and **Antigravity IDE** (with strict registry disambiguation).
+  - One-click addition of any Chromium / Electron-based desktop AI app (e.g. Cursor, Windsurf).
 - **Concurrent Multi-App Management**:
   - Unified top card for global proxy settings (`HTTP` & `SOCKS5`, local port auto-scanning, editable `NO_PROXY` bypass rules).
   - Parallel app cards with independent **"Proxied" / "Direct"** switching.

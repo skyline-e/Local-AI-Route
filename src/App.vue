@@ -50,6 +50,7 @@ const settings = ref<AppSettings>({
 
 const effectiveTargets = ref<TargetAppSpec[]>([]);
 const appStatuses = ref<Record<string, AppRuntimeState>>({});
+const launchingIds = ref<Record<string, boolean>>({});
 const showNoProxy = ref(false);
 const scannedPorts = ref<number[]>([]);
 const isScanning = ref(false);
@@ -77,9 +78,11 @@ function showToast(message: string, type: "success" | "error" | "warn" | "info" 
 const confirmStopModal = ref<{
   open: boolean;
   target: TargetAppSpec | null;
+  relaunchAfterStop: boolean;
 }>({
   open: false,
   target: null,
+  relaunchAfterStop: false,
 });
 
 // Confirm Remove Custom App Modal
@@ -253,18 +256,36 @@ async function handleAutoDetect(appId: string) {
   }
 }
 
-async function handleLaunch(target: TargetAppSpec) {
+function handleLaunch(target: TargetAppSpec) {
+  if (launchingIds.value[target.id]) return;
+  const status = appStatuses.value[target.id]?.status;
+  const needsRestart = status === "restart_needed" || status === "running_unproxied";
+  if (needsRestart && target.warn_unsaved_on_kill) {
+    confirmStopModal.value = { open: true, target, relaunchAfterStop: true };
+  } else {
+    executeLaunch(target);
+  }
+}
+
+async function executeLaunch(target: TargetAppSpec, forceRestart?: boolean) {
+  if (launchingIds.value[target.id]) return;
+  launchingIds.value[target.id] = true;
   try {
-    await invoke("launch_app", { appId: target.id });
+    confirmStopModal.value = { open: false, target: null, relaunchAfterStop: false };
+    await invoke("launch_app", { appId: target.id, forceRestart });
+    await refreshTargets();
     await refreshStatuses();
   } catch (err) {
-    showToast(`Launch failed: ${err}`, "error");
+    showToast(`${err}`, "warn", 4500);
+    await refreshStatuses();
+  } finally {
+    launchingIds.value[target.id] = false;
   }
 }
 
 function handleStop(target: TargetAppSpec) {
   if (target.warn_unsaved_on_kill) {
-    confirmStopModal.value = { open: true, target };
+    confirmStopModal.value = { open: true, target, relaunchAfterStop: false };
   } else {
     executeStop(target, false);
   }
@@ -278,7 +299,7 @@ async function executeStop(target: TargetAppSpec, force = false) {
   } catch (err) {
     showToast(`Stop failed: ${err}`, "error");
   } finally {
-    confirmStopModal.value = { open: false, target: null };
+    confirmStopModal.value = { open: false, target: null, relaunchAfterStop: false };
   }
 }
 
@@ -427,7 +448,7 @@ onUnmounted(() => {
         <div>
           <h1 class="text-xl font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
             {{ t("app_title") }}
-            <span class="text-xs px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300 font-mono">v0.2.0 (Tauri)</span>
+            <span class="text-xs px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300 font-mono">v0.2.1 (Tauri)</span>
           </h1>
           <p class="text-xs text-slate-500 dark:text-slate-400">{{ t("app_subtitle") }}</p>
         </div>
@@ -669,16 +690,18 @@ onUnmounted(() => {
             <div class="flex items-center gap-2">
               <!-- Launch / Restart Button -->
               <button
-                v-if="appStatuses[target.id]?.status === 'restart_needed'"
+                v-if="appStatuses[target.id]?.status === 'restart_needed' || appStatuses[target.id]?.status === 'running_unproxied'"
                 @click="handleLaunch(target)"
-                class="px-4 py-1.5 text-xs font-medium rounded-lg bg-rose-600 text-white hover:bg-rose-700 flex items-center gap-1.5 shadow-sm transition"
+                :disabled="Boolean(launchingIds[target.id])"
+                class="px-4 py-1.5 text-xs font-medium rounded-lg bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 shadow-sm transition"
               >
-                <RotateCw class="w-3.5 h-3.5" /> {{ t("btn_restart") }}
+                <RotateCw :class="['w-3.5 h-3.5', launchingIds[target.id] ? 'animate-spin' : '']" /> {{ t("btn_restart") }}
               </button>
               <button
                 v-else
                 @click="handleLaunch(target)"
-                class="px-4 py-1.5 text-xs font-medium rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 flex items-center gap-1.5 shadow-sm transition"
+                :disabled="Boolean(launchingIds[target.id])"
+                class="px-4 py-1.5 text-xs font-medium rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 shadow-sm transition"
               >
                 <Play class="w-3.5 h-3.5" /> {{ t("btn_launch") }}
               </button>
@@ -795,7 +818,7 @@ onUnmounted(() => {
             <input
               v-model="customAppForm.name"
               type="text"
-              placeholder="e.g. Claude Desktop / Cursor"
+              placeholder="e.g. Cursor / Windsurf"
               class="w-full text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 p-2 focus:ring-2 focus:ring-sky-500 outline-none"
             />
           </div>
@@ -870,13 +893,13 @@ onUnmounted(() => {
             {{ t("btn_cancel") }}
           </button>
           <button
-            @click="executeStop(confirmStopModal.target, false)"
+            @click="confirmStopModal.relaunchAfterStop ? executeLaunch(confirmStopModal.target, false) : executeStop(confirmStopModal.target, false)"
             class="px-3.5 py-1.5 text-xs font-medium rounded-lg bg-sky-600 text-white hover:bg-sky-700 shadow-sm"
           >
             {{ t("btn_confirm_close") }}
           </button>
           <button
-            @click="executeStop(confirmStopModal.target, true)"
+            @click="confirmStopModal.relaunchAfterStop ? executeLaunch(confirmStopModal.target, true) : executeStop(confirmStopModal.target, true)"
             class="px-3.5 py-1.5 text-xs font-medium rounded-lg bg-rose-600 text-white hover:bg-rose-700 shadow-sm"
           >
             {{ t("btn_force_kill") }}

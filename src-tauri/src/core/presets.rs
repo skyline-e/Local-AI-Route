@@ -15,6 +15,18 @@ pub fn builtin_presets() -> Vec<TargetAppSpec> {
             warn_unsaved_on_kill: false,
         },
         TargetAppSpec {
+            id: "claude".into(),
+            name: "Claude APP".into(),
+            name_en: "Claude APP".into(),
+            builtin: true,
+            exe_path: String::new(),
+            proxy_enabled: true,
+            probe_urls: vec!["https://claude.ai/".into()],
+            child_process_patterns: vec![],
+            sidecar_cmdline_regex: String::new(),
+            warn_unsaved_on_kill: false,
+        },
+        TargetAppSpec {
             id: "antigravity-app".into(),
             name: "Antigravity (桌面版)".into(),
             name_en: "Antigravity (Desktop)".into(),

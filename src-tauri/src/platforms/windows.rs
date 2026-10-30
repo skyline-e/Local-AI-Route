@@ -9,45 +9,16 @@ use winreg::RegKey;
 pub fn discover_target_executable(app_id: &str) -> Option<String> {
     let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
     let prog_files = std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
+    let prog_files_x86 = std::env::var("ProgramFiles(x86)").unwrap_or_else(|_| r"C:\Program Files (x86)".into());
 
     match app_id {
         "chatgpt" => {
-            // 1. Check Store Execution Alias
-            if !local_app_data.is_empty() {
-                let alias = Path::new(&local_app_data)
-                    .join("Microsoft")
-                    .join("WindowsApps")
-                    .join("ChatGPT.exe");
-                if alias.is_file() {
-                    return Some(alias.to_string_lossy().to_string());
-                }
+            // 1. Check Appx / MSIX Repository in HKCU (prefer real package binary over alias)
+            if let Some(found) = find_latest_appx_exe(&["openai.chatgpt", "openai.codex"], "ChatGPT.exe") {
+                return Some(found);
             }
 
-            // 2. Check Appx Repository in HKCU
-            if let Ok(hkcu) = RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(
-                r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages",
-                KEY_READ,
-            ) {
-                for pkg_name in hkcu.enum_keys().filter_map(|r| r.ok()) {
-                    let low = pkg_name.to_lowercase();
-                    if low.starts_with("openai.chatgpt") || low.starts_with("openai.codex") {
-                        if let Ok(pkg_key) = hkcu.open_subkey_with_flags(&pkg_name, KEY_READ) {
-                            if let Ok(root) = pkg_key.get_value::<String, _>("PackageRootFolder") {
-                                let c1 = Path::new(&root).join("app").join("ChatGPT.exe");
-                                if c1.is_file() {
-                                    return Some(c1.to_string_lossy().to_string());
-                                }
-                                let c2 = Path::new(&root).join("ChatGPT.exe");
-                                if c2.is_file() {
-                                    return Some(c2.to_string_lossy().to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 3. Fallback standard paths
+            // 2. Check standard paths
             if !local_app_data.is_empty() {
                 let c = Path::new(&local_app_data)
                     .join("Programs")
@@ -60,6 +31,82 @@ pub fn discover_target_executable(app_id: &str) -> Option<String> {
             let c = Path::new(&prog_files).join("ChatGPT").join("ChatGPT.exe");
             if c.is_file() {
                 return Some(c.to_string_lossy().to_string());
+            }
+
+            // 3. Fallback to Store Execution Alias
+            if !local_app_data.is_empty() {
+                for alias_name in &["ChatGPT.exe", "chatgpt-desktop.exe"] {
+                    let alias = Path::new(&local_app_data)
+                        .join("Microsoft")
+                        .join("WindowsApps")
+                        .join(alias_name);
+                    if is_executable_or_alias(&alias) {
+                        return Some(alias.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+        "claude" => {
+            // 1. Check Appx / MSIX Repository in HKCU (prefer real package binary over alias for direct flag injection & icon)
+            if let Some(found) = find_latest_appx_exe(&["claude_", "anthropic."], "Claude.exe") {
+                return Some(found);
+            }
+
+            // 2. Check Squirrel / Win32 install in %LOCALAPPDATA%\AnthropicClaude\app-*\Claude.exe
+            if !local_app_data.is_empty() {
+                let squirrel_root = Path::new(&local_app_data).join("AnthropicClaude");
+                if let Some(found) = find_latest_squirrel_exe(&squirrel_root, "Claude.exe") {
+                    return Some(found);
+                }
+                let squirrel_stub = squirrel_root.join("Claude.exe");
+                if squirrel_stub.is_file() {
+                    return Some(squirrel_stub.to_string_lossy().to_string());
+                }
+
+                // 3. Check standard LocalAppData Programs paths
+                for sub in &[
+                    r"Programs\Claude\Claude.exe",
+                    r"Programs\Claude Desktop\Claude.exe",
+                    r"Programs\claude-desktop\Claude.exe",
+                ] {
+                    let candidate = Path::new(&local_app_data).join(sub);
+                    if candidate.is_file() {
+                        return Some(candidate.to_string_lossy().to_string());
+                    }
+                }
+            }
+
+            // 4. Check ProgramFiles / ProgramFiles(x86) paths
+            for base in &[&prog_files, &prog_files_x86] {
+                if base.is_empty() {
+                    continue;
+                }
+                for sub in &[
+                    r"Anthropic\Claude\Claude.exe",
+                    r"Claude\Claude.exe",
+                    r"Claude Desktop\Claude.exe",
+                ] {
+                    let candidate = Path::new(base).join(sub);
+                    if candidate.is_file() {
+                        return Some(candidate.to_string_lossy().to_string());
+                    }
+                }
+            }
+
+            // 5. Check Uninstall registry
+            if let Some(path) = search_uninstall_registry("claude", false, "Claude.exe") {
+                return Some(path);
+            }
+
+            // 6. Fallback to Windows Store Execution Alias
+            if !local_app_data.is_empty() {
+                let alias = Path::new(&local_app_data)
+                    .join("Microsoft")
+                    .join("WindowsApps")
+                    .join("Claude.exe");
+                if is_executable_or_alias(&alias) {
+                    return Some(alias.to_string_lossy().to_string());
+                }
             }
         }
         "antigravity-app" => {
@@ -97,6 +144,71 @@ pub fn discover_target_executable(app_id: &str) -> Option<String> {
 }
 
 #[cfg(target_os = "windows")]
+fn is_executable_or_alias(path: &Path) -> bool {
+    path.is_file() || std::fs::symlink_metadata(path).map(|m| !m.is_dir()).unwrap_or(false)
+}
+
+#[cfg(target_os = "windows")]
+fn find_latest_appx_exe(prefixes: &[&str], exe_name: &str) -> Option<String> {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags(
+            r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages",
+            KEY_READ,
+        )
+        .ok()?;
+
+    let mut candidates: Vec<(std::time::SystemTime, String)> = Vec::new();
+
+    for pkg_name in hkcu.enum_keys().filter_map(|r| r.ok()) {
+        let low = pkg_name.to_lowercase();
+        if !prefixes.iter().any(|p| low.starts_with(p)) {
+            continue;
+        }
+        if let Ok(pkg_key) = hkcu.open_subkey_with_flags(&pkg_name, KEY_READ) {
+            if let Ok(root) = pkg_key.get_value::<String, _>("PackageRootFolder") {
+                let root_path = Path::new(&root);
+                for candidate in [root_path.join("app").join(exe_name), root_path.join(exe_name)] {
+                    if candidate.is_file() {
+                        let modified = candidate
+                            .metadata()
+                            .and_then(|m| m.modified())
+                            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                        candidates.push((modified, candidate.to_string_lossy().to_string()));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    candidates.into_iter().next().map(|(_, path)| path)
+}
+
+#[cfg(target_os = "windows")]
+fn find_latest_squirrel_exe(root_dir: &Path, exe_name: &str) -> Option<String> {
+    let entries = std::fs::read_dir(root_dir).ok()?;
+    let mut candidates: Vec<(std::time::SystemTime, String)> = Vec::new();
+
+    for entry in entries.filter_map(|e| e.ok()) {
+        let file_name = entry.file_name().to_string_lossy().to_lowercase();
+        if file_name.starts_with("app-") && entry.path().is_dir() {
+            let exe_path = entry.path().join(exe_name);
+            if exe_path.is_file() {
+                let modified = exe_path
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                candidates.push((modified, exe_path.to_string_lossy().to_string()));
+            }
+        }
+    }
+
+    candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    candidates.into_iter().next().map(|(_, path)| path)
+}
+
+#[cfg(target_os = "windows")]
 fn search_uninstall_registry(pattern: &str, require_ide: bool, fallback_exe: &str) -> Option<String> {
     let hives = [
         (HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
@@ -117,20 +229,37 @@ fn search_uninstall_registry(pattern: &str, require_ide: bool, fallback_exe: &st
                             continue;
                         }
 
-                        // Try DisplayIcon
-                        if let Ok(icon) = key.get_value::<String, _>("DisplayIcon") {
-                            let cleaned = icon.split(',').next().unwrap_or("").trim().trim_matches('"');
-                            if Path::new(cleaned).is_file() && cleaned.to_lowercase().ends_with(".exe") {
-                                return Some(cleaned.to_string());
+                        // Try InstallLocation first (including Squirrel app-* and app\ subdirectories)
+                        if let Ok(loc) = key.get_value::<String, _>("InstallLocation") {
+                            let cleaned = loc.trim().trim_matches('"');
+                            if !cleaned.is_empty() {
+                                let loc_path = Path::new(cleaned);
+                                if let Some(squirrel_exe) = find_latest_squirrel_exe(loc_path, fallback_exe) {
+                                    return Some(squirrel_exe);
+                                }
+                                let app_sub = loc_path.join("app").join(fallback_exe);
+                                if app_sub.is_file() {
+                                    return Some(app_sub.to_string_lossy().to_string());
+                                }
+                                let candidate = loc_path.join(fallback_exe);
+                                if candidate.is_file() {
+                                    return Some(candidate.to_string_lossy().to_string());
+                                }
                             }
                         }
 
-                        // Try InstallLocation
-                        if let Ok(loc) = key.get_value::<String, _>("InstallLocation") {
-                            let cleaned = loc.trim().trim_matches('"');
-                            let candidate = Path::new(cleaned).join(fallback_exe);
-                            if candidate.is_file() {
-                                return Some(candidate.to_string_lossy().to_string());
+                        // Try DisplayIcon (excluding Squirrel Update.exe and uninstallers)
+                        if let Ok(icon) = key.get_value::<String, _>("DisplayIcon") {
+                            let cleaned = icon.split(',').next().unwrap_or("").trim().trim_matches('"');
+                            let icon_path = Path::new(cleaned);
+                            if let Some(fname) = icon_path.file_name().and_then(|n| n.to_str()) {
+                                let fname_low = fname.to_lowercase();
+                                if icon_path.is_file()
+                                    && fname_low.ends_with(".exe")
+                                    && !matches!(fname_low.as_str(), "update.exe" | "uninstall.exe" | "unins000.exe")
+                                {
+                                    return Some(cleaned.to_string());
+                                }
                             }
                         }
                     }

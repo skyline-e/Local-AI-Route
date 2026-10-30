@@ -142,6 +142,13 @@ pub async fn run_diagnostics(spec: &TargetAppSpec, proxy: &ProxyConfig) -> DiagR
             summary: "应用未运行，跳过子进程检测".into(),
             details: vec![],
         });
+    } else if spec.child_process_patterns.is_empty() {
+        items.push(DiagItem {
+            title: "关键子进程环境变量核验 (Subprocess Env Check)".into(),
+            status: CheckStatus::Pass,
+            summary: "当前应用无需独立服务子进程校验，网络请求由主进程及 Chromium 网络栈直接接管".into(),
+            details: vec![],
+        });
     } else {
         let tree_pids = collect_process_tree(&sys, &runtime.pids);
         let mut matched_children = Vec::new();

@@ -5,6 +5,7 @@ use std::path::Path;
 pub fn discover_target_executable(app_id: &str) -> Option<String> {
     let bundle_name = match app_id {
         "chatgpt" => "ChatGPT.app",
+        "claude" => "Claude.app",
         "antigravity-app" => "Antigravity.app",
         "antigravity-ide" => "Antigravity IDE.app",
         _ => return None,

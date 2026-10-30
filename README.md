@@ -12,9 +12,9 @@
 
 ## 核心特性
 
-- **三大一等公民预设 + 自定义应用扩展**：
-  - 开箱自动定位 **ChatGPT APP**（兼容 Microsoft Store `OpenAI.ChatGPT` / `OpenAI.Codex` MSIX 商店版与独立安装包）、**Antigravity 桌面版**、**Antigravity IDE**（精确区分注册表条目防误判）。
-  - 支持一键添加任意 Chromium / Electron 类桌面 AI 应用（如 Claude Desktop、Cursor 等）。
+- **四大一等公民预设 + 自定义应用扩展**：
+  - 开箱自动定位 **ChatGPT APP**（兼容 Microsoft Store `OpenAI.ChatGPT` / `OpenAI.Codex` MSIX 商店版与独立安装包）、**Claude APP**（兼容 MSIX 商店版、`%LOCALAPPDATA%\AnthropicClaude\app-*` Squirrel 安装包及标准安装目录）、**Antigravity 桌面版**、**Antigravity IDE**（精确区分注册表条目防误判）。
+  - 支持一键添加任意 Chromium / Electron 类桌面 AI 应用（如 Cursor、Windsurf 等）。
 - **多应用并列并发管理**：
   - 顶部统一配置全局代理（支持 `HTTP` 与 `SOCKS5`、本地常见代理监听端口自动扫描填入、可编辑 `NO_PROXY` 本地/内网绕过规则），下方多卡片支持同时运行与各自独立的 **「走代理 / 直连」** 切换。
 - **智能冲突识别与分级安全重启**：
