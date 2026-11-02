@@ -35,24 +35,110 @@
 
 ## Key Features
 
-- **First-Class Presets + Custom App Extensions**:
-  - Out-of-the-box auto-detection for **ChatGPT APP** (compatible with Microsoft Store `OpenAI.ChatGPT` / `OpenAI.Codex` MSIX and standalone installers), **Claude APP** (compatible with MSIX packages, `%LOCALAPPDATA%\AnthropicClaude\app-*` Squirrel installs, and standard installers), **Antigravity Desktop**, and **Antigravity IDE** (with strict registry disambiguation).
-  - One-click addition of any Chromium / Electron-based desktop AI app (e.g. Cursor, Windsurf).
-- **Concurrent Multi-App Management**:
-  - Unified top card for global proxy settings (`HTTP` & `SOCKS5`, local port auto-scanning, editable `NO_PROXY` bypass rules).
-  - Parallel app cards with independent **"Proxied" / "Direct"** switching.
-- **Smart Conflict Detection & Staged Safe Restart**:
-  - Identifies direct or outdated proxy instances; sends graceful close (`WM_CLOSE`) signals first, with safe tree termination confirmation if minimized to tray.
-- **Four-Dimensional Diagnostics Engine (Redacted Export)**:
-  1. **Tunnel Probe**: Lightweight reachability check via configured proxy to `chatgpt.com` or Google endpoints.
-  2. **Main Process CLI Args**: Live verification of `--proxy-server` and `--disable-quic`.
-  3. **Subprocess Env Check**: Antigravity-tailored verification of `language_server` `HTTPS_PROXY` / `HTTP_PROXY`.
-  4. **Process-Tree TCP Snapshot**: Local proxy connection snapshot within the target PID tree with automated `%USERPROFILE%` redaction.
-- **System Tray Residency & Desktop Shortcuts**:
-  - Single instance, minimize to tray on close, autostart on boot, `--launch <app_id>` silent CLI launching, and desktop `.lnk` generation.
-- **Dual-Storage Modes & Modern UI**:
-  - Auto-switches between portable `data/` and standard `%LOCALAPPDATA%` modes.
-  - Bilingual (zh-CN / en-US) with System / Light / Dark theme support.
+- 🎯 **Zero-Global-TUN / No System Proxy Tampering**: Pure process-level network isolation. Routes only designated AI apps through the proxy, leaving internal VPNs, LAN resources, and regular software untouched.
+- 🤖 **Deep Native Adaptation**: Out-of-the-box support for ChatGPT, Claude, Antigravity Desktop, and Antigravity IDE, with one-click custom addition for any Chromium / Electron apps (e.g. Cursor, Windsurf).
+- 🎛️ **Concurrent Management & Independent Toggling**: Multi-card dashboard with per-app "Proxied / Direct" switches, local proxy port auto-scanning, and customizable `NO_PROXY` bypass rules.
+- 🔄 **Smart State Sensing & Safe Restart**: Real-time detection of running state, direct conflicts, and proxy port drift; sends graceful close signals first to safeguard workspace data.
+- 🩺 **Four-Dimensional Diagnostics Engine**: Comprehensive diagnostics spanning upstream tunnel reachability, main CLI arguments, LSP child process env inheritance, and kernel-level TCP snapshots with one-click privacy redaction.
+- 🚀 **Desktop Shortcuts & Lightweight Tray**: Generate standalone desktop shortcuts with original icons, minimize to tray on close, and idle in the background with only ~20MB RAM usage.
+- 📦 **Portable & Modern Bilingual UI**: Auto-detects portable `data/` directory and standard installation modes, with instant English / Simplified Chinese switching and Dark / Light theme support.
+
+---
+
+## Technical Architecture & Implementation
+
+Local-AI-Route is built with **Tauri v2 + Rust** to deliver high-performance, low-overhead native execution without requiring virtual network interfaces (TUN/TAP). It achieves lightweight, secure, and pinpoint proxy routing via **process-level argument injection**, **environment variable penetration**, and **kernel-level network socket inspection**.
+
+```mermaid
+flowchart TD
+    subgraph UI["Frontend Interface (Vue 3 + Tailwind CSS)"]
+        Card["App Cards / Global Proxy Config"]
+        DiagView["4D Diagnostics Panel"]
+    end
+
+    subgraph Core["Rust Core Engine (Tauri v2)"]
+        Scanner["Multi-Channel App Discovery\n(MSIX / Squirrel / Plist / PATH)"]
+        Injector["Process Launcher & Parameter Injector\n(--proxy-server / Env Penetration)"]
+        Lifecycle["Process Lifecycle Manager\n(WM_CLOSE Graceful Exit / PID Tree Tracking)"]
+        DiagEngine["4D Diagnostics Engine\n(Tunnel Probe / CLI Check / Subprocess Env / TCP Snapshot)"]
+    end
+
+    subgraph Target["Target Applications"]
+        MainProc["Main Application Process\n(ChatGPT / Claude / Electron)"]
+        LspProc["Core Subprocesses / Language Servers\n(language_server / Node Extension Host)"]
+    end
+
+    subgraph Net["Underlying Network & Local Proxy"]
+        LocalProxy["Local Proxy Client\n(Clash / Mihomo / v2rayN etc.)"]
+        KernelTCP["Kernel TCP Connection Table\n(Windows IP Helper / /proc/net)"]
+    end
+
+    Card -->|Launch App| Injector
+    Scanner -->|Provide Binary Path| Injector
+    Injector -->|Inject CLI Arguments| MainProc
+    Injector -->|Inject Environment Variables| MainProc
+    MainProc -->|Spawn Child & Inherit Env| LspProc
+    MainProc & LspProc -->|Network Traffic| LocalProxy
+    Lifecycle -->|Graceful Signal / Tree Reclamation| MainProc & LspProc
+    DiagEngine -.->|HTTP/TLS Probe| LocalProxy
+    DiagEngine -.->|Inspect CLI & Env| MainProc & LspProc
+    DiagEngine -.->|Snapshot Active Connections| KernelTCP
+    DiagEngine -->|Render Report| DiagView
+```
+
+### 1. Process-Level Network Isolation & Parameter Injection
+
+Traditional global proxies or TUN virtual adapters intercept all host traffic indiscriminately, frequently causing corporate VPN conflicts, intranet routing breaks, unintended data meter billing, and UDP blocking. Local-AI-Route isolates traffic cleanly at the operating system level:
+
+- **Chromium / Electron Network Stack Injection**:
+  Command-line arguments (`--proxy-server=<protocol>://<ip>:<port>` and `--proxy-bypass-list=<rules>`) are injected directly into the target process during launch. Chromium's embedded network service (Blink/V8) routes all HTTP/HTTPS and WebSocket requests through the specified local proxy port.
+- **Forced QUIC Disabling (`--disable-quic`)**:
+  Desktop AI apps (such as ChatGPT and Claude) rely heavily on HTTP/2 streams and Server-Sent Events (SSE). Some local proxy clients suffer from packet loss or silent timeouts when handling QUIC (UDP-based HTTP/3) handshakes. Injecting `--disable-quic` forces the network stack to fall back to proven, robust TCP tunnels, eliminating indefinite loading spinners and blank screens.
+- **Multi-Tier Environment Variable Penetration**:
+  In AI developer environments like Antigravity or Cursor, model completions and LSP services run inside decoupled subprocesses (e.g., `language_server` written in Go, Node.js, or Python) rather than the Chromium web stack. The injector populates `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` (both upper and lowercase), together with `NODE_USE_ENV_PROXY=1`, ensuring all descendant worker threads and sidecars inherit proxy configurations seamlessly.
+
+### 2. Cross-Platform Multi-Channel Discovery & Disambiguation
+
+To eliminate the need for users to manually hunt down executable paths, the engine provides automatic multi-channel discovery:
+
+- **Windows Registry Deep Scanning & Self-Healing**:
+  - **MSIX / Windows Store Penetration**: For ChatGPT (`OpenAI.ChatGPT`, `OpenAI.Codex`) and Claude installed via the Microsoft Store, default shortcuts point to Execution Aliases (`WindowsApps` reparse points), which fail to accept runtime proxy arguments or lose icons. The engine traverses `AppModel\Repository\Packages` in the registry to pinpoint the actual binary residing in the physical `WindowsApps` volume.
+  - **Squirrel Dynamic Version Self-Healing**: Applications using Squirrel installers (like Claude Win32) place binaries inside version-named subdirectories (e.g. `%LOCALAPPDATA%\AnthropicClaude\app-0.x.x\Claude.exe`). The engine parses version increments dynamically, automatically retargeting the newest release after background auto-updates.
+  - **Strict Disambiguation**: Antigravity Desktop and Antigravity IDE (a specialized VS Code fork) share similar naming conventions. The engine performs strict signature and registry key disambiguation to prevent mismatched launches.
+- **macOS App Bundle Recursive Parsing**:
+  Scans `/Applications` and `~/Applications`, reading `CFBundleExecutable` from `.app/Contents/Info.plist`; integrates with Spotlight (`mdfind`) for sub-second app location.
+- **Linux XDG Specification & PATH Traversal**:
+  Parses `.desktop` entries across `/usr/share/applications`, `~/.local/share/applications`, and Flatpak/Snap directories, combined with sequential system `PATH` and FHS directory checks.
+
+### 3. Staged Safe Shutdown & Process Tree Topology Reclamation
+
+Switching proxy ports or toggling between "Proxied" and "Direct" modes requires a full process restart to apply new parameters. To prevent data corruption or orphaned instances, the engine employs a staged lifecycle controller:
+
+- **Graceful Close Priority**:
+  - On Windows, the engine iterates root and visible windows via Win32 `EnumWindows` and posts `WM_CLOSE` messages; on Unix platforms, it dispatches `SIGTERM`.
+  - This allows applications to execute built-in lifecycle hooks (saving unsaved files, disconnecting active sessions, persisting drafts).
+- **Process Tree Topology Tracking (PID Tree DAG)**:
+  Modern Electron apps spawn extensive process trees (Renderer, GPU, Utility, Crashpad, Extension Hosts). Many minimize to the system tray on window close.
+  The engine tracks the complete process DAG. If helper processes remain active or the user confirms a force restart, the entire process subtree is cleanly dismantled, preventing port conflicts and dual-instance deadlocks.
+- **Four-State Runtime Machine**:
+  Continuously inspects active system process tables and evaluates command-line arguments against configured proxies, classifying states into:
+  `Stopped`, `RunningDirect`, `RunningProxied`, and `RestartNeeded`.
+
+### 4. Four-Dimensional Diagnostics Engine
+
+When connection issues occur, conventional tools report vague "connection failed" errors. Local-AI-Route's 4D engine pinpoints the root cause:
+
+1. **Dimension 1: Upstream Tunnel Probe**:
+   Dispatches a lightweight HTTP/TLS handshake through the configured proxy to target services (`chatgpt.com` or Google probes). **Crucial capability**: Differentiates between "proxy unreachable / upstream timeout" and "HTTP 403 Forbidden". An HTTP 403 proves that the local-to-remote TCP/TLS tunnel is fully established and functional, isolating the issue to WAF credentials rather than network routing.
+2. **Dimension 2: Main Process CLI Args Check**:
+   Fetches active process command lines in real time to verify that `--proxy-server` and `--disable-quic` flags are active and match the currently configured port.
+3. **Dimension 3: LSP Subprocess Env Verification**:
+   Inspects the memory environment space of critical language servers and sidecars (e.g. Antigravity's `language_server`) to guarantee that `HTTPS_PROXY` is successfully inherited.
+4. **Dimension 4: Kernel-Level Active TCP Snapshot**:
+   - Queries the system connection table (via Win32 `GetExtendedTcpTable` / `MIB_TCPTABLE_OWNER_PID` on Windows, and socket metrics on Unix).
+   - Filters all connections owned by the application's process tree, highlighting active `ESTABLISHED` sockets directed to the local proxy port (e.g. `:7890`), providing definitive physical proof of routed traffic.
+- **Privacy Redaction**:
+  All exported diagnostic reports automatically regex-redact local user home directories (masking them as `%USERPROFILE%`), ensuring safety when sharing diagnostic logs publicly.
 
 ---
 

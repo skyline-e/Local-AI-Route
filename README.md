@@ -35,22 +35,110 @@
 
 ## 核心特性
 
-- **四大一等公民预设 + 自定义应用扩展**：
-  - 开箱自动定位 **ChatGPT APP**（兼容 Microsoft Store `OpenAI.ChatGPT` / `OpenAI.Codex` MSIX 商店版与独立安装包）、**Claude APP**（兼容 MSIX 商店版、`%LOCALAPPDATA%\AnthropicClaude\app-*` Squirrel 安装包及标准安装目录）、**Antigravity 桌面版**、**Antigravity IDE**（精确区分注册表条目防误判）。
-  - 支持一键添加任意 Chromium / Electron 类桌面 AI 应用（如 Cursor、Windsurf 等）。
-- **多应用并列并发管理**：
-  - 顶部统一配置全局代理（支持 `HTTP` 与 `SOCKS5`、本地常见代理监听端口自动扫描填入、可编辑 `NO_PROXY` 本地/内网绕过规则），下方多卡片支持同时运行与各自独立的 **「走代理 / 直连」** 切换。
-- **智能冲突识别与分级安全重启**：
-  - 自动识别已在后台直连运行或代理端口已变更的实例；重启/停止优先发送优雅关闭信号（`WM_CLOSE`），若应用缩进托盘未退则弹窗由用户二次确认后清理残留进程树（对 Antigravity IDE 等编辑器额外给出未保存工作高危提醒）。
-- **四维精细化连接诊断（脱敏导出）**：
-  1. **代理隧道探测**：经本地配置代理向端点（`chatgpt.com` 或 Google 探测点）发起轻量探测，明确区分隧道可达与上游拦截。
-  2. **主进程启动参数**：实时核验主进程命令行中的 `--proxy-server` 与 `--disable-quic`。
-  3. **子进程环境变量继承**：针对 Antigravity 专项核查 `language_server` 子进程是否成功继承 `HTTPS_PROXY` / `HTTP_PROXY`。
-  4. **进程树活跃 TCP 快照**：在目标应用进程树范围内快照指向代理端口的连接，一键复制脱敏诊断报告（自动将用户路径替换为 `%USERPROFILE%`）。
-- **系统托盘驻留 + 桌面带代理快捷方式**：
-  - 单实例运行，关闭窗口自动隐藏至系统托盘，支持开机静默驻留，支持 `--launch <app_id>` 命令行直启及一键生成带原应用图标的桌面快捷方式。
-- **双存储模式与现代化外观**：
-  - 自动识别同目录 `data/` 绿色便携模式与 `%LOCALAPPDATA%\Local-AI-Route` 标准模式；支持简体中文 / English 即时切换与跟随系统 / 浅色 / 深色外观。
+- 🎯 **免全局 TUN / 免改系统代理**：纯进程级网络接管，只让指定 AI 应用走代理，内网 VPN、局域网访问与日常应用完全不受干扰。
+- 🤖 **深度适配主流桌面 AI 应用**：开箱支持 ChatGPT、Claude、Antigravity 桌面版与 Antigravity IDE，并支持一键添加任意 Chromium / Electron 应用（如 Cursor、Windsurf）。
+- 🎛️ **多应用并发与独立分流**：卡片式并列管理，各应用独立切换「走代理 / 直连」；支持本地代理端口一键扫描与 `NO_PROXY` 绕过规则。
+- 🔄 **智能状态感知与安全重启**：实时感知运行状态、直连冲突与代理端口变更；优先发送窗口平滑退出信号，保障工作区内容安全。
+- 🩺 **四维立体连接诊断**：包含代理隧道可达性、命令行启动参数、LSP 子进程环境继承及内核级 TCP 连接快照，支持一键隐私脱敏导出。
+- 🚀 **极轻驻留与桌面快捷启动**：支持生成带原应用图标的桌面快捷方式，支持关闭至托盘与开机静默驻留，日常内存占用仅约 20MB。
+- 📦 **绿色便携与现代双语交互**：自动识别 `data/` 目录便携模式，支持中英双语即时切换与浅色/深色主题。
+
+---
+
+## 技术原理与架构实现
+
+Local-AI-Route 采用 **Tauri v2 + Rust** 构建高性能底层核心，无需安装任何虚拟网卡驱动（TUN/TAP），通过**进程级参数注入**、**环境变量穿透**与**内核网络表核验**实现轻量、安全、精准的网络路由。
+
+```mermaid
+flowchart TD
+    subgraph UI["前端交互层 (Vue 3 + Tailwind CSS)"]
+        Card["应用卡片 / 代理配置"]
+        DiagView["四维连接诊断面板"]
+    end
+
+    subgraph Core["Rust 核心引擎 (Tauri v2)"]
+        Scanner["多渠道应用发现引擎\n(MSIX / Squirrel / Plist / PATH)"]
+        Injector["进程启动与参数注入器\n(--proxy-server / 环境变量穿透)"]
+        Lifecycle["进程生命周期管理器\n(WM_CLOSE 优雅退出 / PID 进程树追踪)"]
+        DiagEngine["四维立体诊断引擎\n(隧道探测 / CLI校验 / 子进程Env / TCP快照)"]
+    end
+
+    subgraph Target["目标应用生态"]
+        MainProc["AI 应用主进程\n(ChatGPT / Claude / Electron)"]
+        LspProc["核心子进程 / 语言服务\n(language_server / Node Extension Host)"]
+    end
+
+    subgraph Net["底层网络与本地代理"]
+        LocalProxy["本地代理客户端\n(Clash / Mihomo / v2rayN 等)"]
+        KernelTCP["内核 TCP 连接表\n(Windows IP Helper / /proc/net)"]
+    end
+
+    Card -->|启动应用| Injector
+    Scanner -->|提供二进制路径| Injector
+    Injector -->|注入 CLI 参数| MainProc
+    Injector -->|注入环境变量| MainProc
+    MainProc -->|派生子进程并继承 Env| LspProc
+    MainProc & LspProc -->|网络流量直达| LocalProxy
+    Lifecycle -->|优雅信号 / 树回收| MainProc & LspProc
+    DiagEngine -.->|HTTP/TLS 探针| LocalProxy
+    DiagEngine -.->|检查命令行 & 环境变量| MainProc & LspProc
+    DiagEngine -.->|查询活跃连接快照| KernelTCP
+    DiagEngine -->|输出诊断报告| DiagView
+```
+
+### 1. 进程级网络隔离与参数注入
+
+传统全局代理或 TUN 虚拟网卡模式往往会强制拦截整机所有流量，容易导致内网穿透中断、企业 VPN 路由冲突、非目标流量被计费以及 UDP 协议阻断等问题。Local-AI-Route 在启动目标应用时从操作系统底层进行精确隔离与注入：
+
+- **Chromium / Electron 网络栈注入**：
+  通过命令行直接向目标主进程注入 `--proxy-server=<protocol>://<ip>:<port>` 与 `--proxy-bypass-list=<rules>` 参数，使 Chromium 的内置网络栈（Blink/V8 网络服务）在解析与发起任何网络请求时，强制通过配置的本地代理端口。
+- **强制禁用 UDP QUIC（`--disable-quic`）**：
+  桌面 AI 应用（如 ChatGPT、Claude）大量依赖 HTTP/2 与长连接流式推送（SSE）。部分代理工具在处理 QUIC（HTTP/3 基于 UDP）握手时可能发生静默丢包或连接超时。注入 `--disable-quic` 可强制让网络栈降级使用稳定的 TCP 隧道连接，彻底解决客户端卡在 Loading 或白屏的问题。
+- **多层级环境变量穿透**：
+  针对 Antigravity、Cursor 等集成开发环境与桌面助手，其代码补全模型交互、LSP（Language Server Protocol）往往运行于由主进程派生的独立子进程（如 Go/Node/Python 编写的 `language_server`），不走 Chromium 页面网络栈。为此，注入器在进程启动时全量注入 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY`（及其对应小写变量），并附加 `NODE_USE_ENV_PROXY=1`，确保所有派生子进程和侧车服务（Sidecar）百分百继承代理环境变量。
+
+### 2. 跨平台多渠道二进制发现与消歧
+
+为了让用户开箱即用、无需手动满磁盘翻找 `.exe` 或 `.app` 路径，底层实现了深度自适应的定位引擎：
+
+- **Windows 深度注册表扫描与自愈**：
+  - **MSIX / 商店版穿透**：针对从 Microsoft Store 安装的 ChatGPT（`OpenAI.ChatGPT`、`OpenAI.Codex`）与 Claude，普通快捷方式仅指向虚拟执行别名（Execution Alias），直接通过别名启动容易导致命令行参数注入丢失或图标损坏。引擎深入遍历注册表 `AppModel\Repository\Packages`，精准定位物理存储在 `WindowsApps` 目录下的真实二进制文件。
+  - **Squirrel 动态版本自愈**：Claude 等采用 Squirrel 安装器的应用，其真实执行文件位于带有版本号的动态目录（如 `%LOCALAPPDATA%\AnthropicClaude\app-0.x.x\Claude.exe`）。引擎内置版本号解析与比较逻辑，当应用后台自动热升级后，能自动识别并重定向到最新版本的执行文件。
+  - **精确应用消歧（Disambiguation）**：Antigravity 桌面客户端与 Antigravity IDE（基于 VS Code 分支深度定制）在注册表和安装目录中存在相近标识。引擎通过严格的包名、可执行文件签名及注册表键值比对，杜绝两者混淆。
+- **macOS App Bundle 递归解析**：
+  优先扫描 `/Applications` 与 `~/Applications`，解析 `.app/Contents/Info.plist` 中的 `CFBundleExecutable` 字段获取主可执行文件；支持结合系统 Spotlight（`mdfind`）实现毫秒级自动检索。
+- **Linux XDG 规范与 PATH 探测**：
+  遵循 XDG 桌面规范，解析 `/usr/share/applications`、`~/.local/share/applications` 以及 Flatpak / Snap 导出的 `.desktop` 文件，并依次遍历系统 `PATH` 与标准 FHS 路径。
+
+### 3. 分级安全关闭与进程树拓扑回收
+
+在修改代理端口或切换「走代理 / 直连」模式时，必须完全重启目标应用才能使新参数生效。为了杜绝数据损坏和进程残留，引擎设计了分级生命周期管理机制：
+
+- **优雅退出优先（Graceful Close）**：
+  - Windows 环境下通过 Win32 API（`EnumWindows`）枚举目标 PID 的根窗口与可见窗口，发送 `WM_CLOSE` 消息；Unix 环境下投递 `SIGTERM` 信号。
+  - 该机制允许应用触发内置的关闭钩子（如保存未保存的文件、断开 WebSocket 会话、持久化草稿）。
+- **进程树拓扑追踪（PID Tree Tracking）**：
+  现代 Electron 应用拥有极其庞大的进程树（包含主进程、GPU 渲染进程、Utility 音视频进程、Crashpad 守护进程、Extension Host 等）。许多应用在收到关闭信号后会默认最小化至系统托盘继续运行。
+  引擎在发出关闭请求后，周期性轮询并维护一份完整的进程有向无环图（DAG），若检测到根进程已退出但孤儿辅进程仍占用内存，或用户确认强制重启，将递归对整棵拓扑树执行深度清理，避免旧实例争抢端口或导致新参数无法挂载。
+- **四态运行时状态机**：
+  实时读取系统进程表中的启动命令行参数，与配置中的代理地址进行特征比对，精确划分为：
+  `Stopped`（已停止）、`RunningDirect`（直连运行中）、`RunningProxied`（代理运行中）、`RestartNeeded`（检测到参数漂移，需要重启生效）。
+
+### 4. 四维立体连接诊断引擎
+
+当网络遇到阻碍时，传统工具往往只能告知“连接失败”，用户无法排查是本地代理未开启、参数未成功注入、还是目标网站风控。Local-AI-Route 实现了覆盖应用生命周期的四维诊断：
+
+1. **第一维：代理隧道握手探测（Tunnel Probe）**
+   经由本地配置的代理地址，使用轻量 HTTP 客户端向目标服务（如 `chatgpt.com` 或 Google 探测点）发起握手。**关键技术点**：明确区分“代理连接超时/上游不可达”与“HTTP 403 阻断”——HTTP 403 状态码说明本地代理到目标服务器的 TCP 与 TLS 隧道已经成功打通，仅因未带登录凭证被目标 WAF 拦截，由此帮助用户明确排除网络层故障。
+2. **第二维：主进程启动参数校验（CLI Args Check）**
+   实时抓取目标应用当前主进程的命令行（CommandLine），严格校验 `--proxy-server` 与 `--disable-quic` 是否真实加载，并核对端口是否与当前全局配置匹配。
+3. **第三维：LSP 关键子进程环境变量核验（Subprocess Env Check）**
+   专门针对 IDE 类应用的语言服务与插件宿主进程（如 Antigravity 的 `language_server`）。即使主进程有代理，子进程若未继承环境变量也会导致补全和 Chat 频繁断联。引擎下钻扫描子进程内存中的 `environ` 表，验证 `HTTPS_PROXY` 是否正常渗透。
+4. **第四维：内核级活跃 TCP 连接快照（PID-Tree TCP Snapshot）**
+   - Windows 平台通过调用底层 Win32 IP Helper API（`GetExtendedTcpTable` 读取 `MIB_TCPTABLE_OWNER_PID`），检索系统完整 IPv4 连接表；Linux/macOS 平台结合系统套接字接口。
+   - 过滤出属主 PID 落在当前应用进程树范围内的所有网络连接，精准高亮标注目标端口等于本地代理端口（如 `:7890`）的 `ESTABLISHED` 连接，提供“流量确实正在走本地代理”的最直接物理证据。
+- **隐私脱敏机制**：
+  诊断输出包含命令行与进程快照，引擎在生成报告时自动对用户家目录路径执行正则脱敏（统一映射为 `%USERPROFILE%`），确保一键复制排障报告至论坛或反馈时，绝不泄露个人系统用户名等隐私信息。
 
 ---
 
