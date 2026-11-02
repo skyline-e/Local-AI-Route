@@ -46,6 +46,35 @@
 
 ---
 
+## Why Not TUN Mode or System Proxy? (Comparison & Advantages)
+
+Many developers wonder: *"Since proxy clients like Clash, Mihomo, and v2rayN already provide 'System Proxy' and 'TUN Virtual Interface Mode', why do we need Local-AI-Route?"*
+
+In real-world development and enterprise office environments, TUN mode is not a silver bullet, and system proxies have severe blind spots regarding subprocess propagation. Below is an in-depth architectural and practical comparison:
+
+| Evaluation Dimension | System Proxy | TUN Mode (Virtual NIC) | Local-AI-Route (Process-Level Injection) |
+| :--- | :--- | :--- | :--- |
+| **Interception Layer** | Application layer (System Registry/WinINet) | Network layer (L3 IP routing table interception) | **Process-level application layer injection (CLI + Env)** |
+| **Corporate VPN Compatibility** | Often overwritten or broken by enterprise VPNs | ❌ **Severe Conflicts** (Routing collisions, drops internal repos/OA, security flags) | ✅ **Flawless Coexistence (Zero Conflict)**, leaves system routing table untouched |
+| **Privileges & Driver Footprint** | No driver needed, standard user rights | ⚠️ **Requires Administrator (UAC)** & Wintun kernel drivers | ✅ **Pure User-Space Execution**, zero kernel drivers, zero privilege escalation |
+| **System Intrusiveness & Stability** | Improper client exit causes total network outages | Driver crashes or leaks risk Winsock corruption or routing blackholes | ✅ **Zero Intrusiveness**, never alters system network configurations |
+| **Subprocess / LSP Inheritance** | ❌ **Poor** (Node/LSP extensions frequently ignore system proxy) | ✅ Good (handled comprehensively at L3) | ✅ **Deep Penetration** (injects `HTTP_PROXY` & `NODE_USE_ENV_PROXY`) |
+| **UDP Bypasses & QUIC Leaks** | Cannot intercept UDP traffic | Relies on firewall / route rule matching | ✅ **Forced `--disable-quic` injection**, cutting off UDP bypass risks |
+| **Rule Maintenance & Mental Overhead** | Very limited; basic bypass lists or PAC scripts only | ❌ **High Mental Overhead**: Requires writing or subscribing to extensive rule sets (GeoSite, Process-Name, CIDR); frequent AI endpoint updates require constant tracking, risking silent leaks and bans if rules lag behind | ✅ **Zero Rule Maintenance (Zero Config Rules)**: Traffic is bound to the proxy at the network stack level; 100% physically deterministic with no need to worry about newly added domains or CDNs |
+| **Rule Drift & Accidental Leaks** | Missed rules fall back to direct | ⚠️ **High Risk**: AI endpoints change rapidly; leaked traffic connects directly, triggering bans | ✅ **Physical Determinism**: All target traffic is strictly bound to the configured proxy port |
+| **Observability & Diagnostics** | Blackbox, hard to diagnose failures | Blackbox, requires Wireshark packet capture | ✅ **Native 4D Diagnostics**: Real-time kernel TCP snapshot verification with redacted export |
+| **Impact on Daily Applications** | Domestic apps risk hijacked traffic or geo-bans | All traffic routes through proxy core; LAN/printers may break | ✅ **Surgically isolated to target AI apps**; Slack, WeChat, games, and LAN stay direct |
+
+> [!TIP]
+> **When should you choose Local-AI-Route?**
+> 1. **Your work machine must stay connected to a corporate VPN** (e.g. GlobalProtect, Cisco AnyConnect, EasyConnect), where enabling TUN breaks intranet services or corporate routing;
+> 2. **You are tired of maintaining complex routing rules and updating geo-databases**, seeking a foolproof "launch and 100% of this app's traffic routes through proxy" experience;
+> 3. **You want local communication, games, and LAN NAS traffic untouched**, isolating proxy tunnels strictly to ChatGPT, Claude, Cursor, and other AI tools;
+> 4. **You prefer not to install kernel drivers or deal with UAC administrator prompts**, wanting a clean, portable utility;
+> 5. **Your AI client frequently spins or shows a blank screen**, and you need kernel-level TCP socket snapshots and tunnel probes to differentiate between network blockage and Cloudflare WAF challenges.
+
+---
+
 ## Technical Architecture & Implementation
 
 Local-AI-Route is built with **Tauri v2 + Rust** to deliver high-performance, low-overhead native execution without requiring virtual network interfaces (TUN/TAP). It achieves lightweight, secure, and pinpoint proxy routing via **process-level argument injection**, **environment variable penetration**, and **kernel-level network socket inspection**.
