@@ -114,27 +114,50 @@ pub async fn run_diagnostics(spec: &TargetAppSpec, proxy: &ProxyConfig) -> DiagR
 
         let (status, summary) = if !spec.proxy_enabled {
             if detected.is_none() {
-                (CheckStatus::Pass, "主进程未携带 --proxy-server，符合直连运行预期".into())
+                if spec.id == "gemini" {
+                    (CheckStatus::Pass, "Gemini Profile 未注入代理配置，符合直连运行预期".into())
+                } else {
+                    (CheckStatus::Pass, "主进程未携带 --proxy-server，符合直连运行预期".into())
+                }
             } else {
                 (CheckStatus::Fail, "目标处于直连模式，但检测到仍残留代理参数，需重启生效".into())
             }
         } else {
             match detected {
                 Some(ref val) if val.to_lowercase().contains(&expected_authority) => {
-                    (CheckStatus::Pass, format!("主进程已携带精确代理参数: --proxy-server={}", val))
+                    if spec.id == "gemini" {
+                        (CheckStatus::Pass, format!("Gemini Profile (Preferences) 已正确注入代理: {}", val))
+                    } else {
+                        (CheckStatus::Pass, format!("主进程已携带精确代理参数: --proxy-server={}", val))
+                    }
                 }
                 Some(ref val) => {
-                    (CheckStatus::Warn, format!("主进程代理参数 ({}) 与当前配置不一致，需重启更新", val))
+                    (CheckStatus::Warn, format!("代理参数 ({}) 与当前配置不一致，需重启更新", val))
                 }
-                None => (CheckStatus::Fail, "主进程未检测到 --proxy-server 参数，未成功走代理".into()),
+                None => {
+                    if spec.id == "gemini" {
+                        (CheckStatus::Fail, "Gemini Profile 未检测到 proxy 配置，未成功走代理".into())
+                    } else {
+                        (CheckStatus::Fail, "主进程未检测到 --proxy-server 参数，未成功走代理".into())
+                    }
+                }
             }
+        };
+
+        let details = if spec.id == "gemini" {
+            vec![
+                format!("主进程命令行: {}", redact_path(&runtime.cmdline_preview)),
+                "注: Gemini 桌面版内置了命令行网络开关拦截检测，因此系统原生采用 Chromium Profile (Preferences) 注入代理，底层 NetworkService 物理流量已完整托管。".into(),
+            ]
+        } else {
+            vec![format!("主进程命令行: {}", redact_path(&runtime.cmdline_preview))]
         };
 
         items.push(DiagItem {
             title: "主进程启动参数核验 (CLI Args Check)".into(),
             status,
             summary,
-            details: vec![format!("主进程命令行: {}", redact_path(&runtime.cmdline_preview))],
+            details,
         });
     }
 

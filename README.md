@@ -19,6 +19,7 @@
 
 - 🤖 **ChatGPT**（兼容 Windows 商店/独立安装包、macOS App Bundle、Linux 桌面客户端）
 - 🧠 **Claude**（兼容 Windows MSIX/Squirrel、macOS App Bundle、Linux 桌面端）
+- ✨ **Gemini 桌面版**（兼容 Windows Squirrel、macOS App Bundle、Linux 桌面端）
 - 🌌 **Antigravity 桌面版**
 - ⚡ **Antigravity IDE**（精确区分注册表与应用标识，专项保障 LSP 子进程代理继承）
 - 🧩 **自定义扩展**：一键添加任意 Chromium / Electron 类桌面 AI 应用（如 Cursor、Windsurf 等）
@@ -36,7 +37,7 @@
 ## 核心特性
 
 - 🎯 **免全局 TUN / 免改系统代理**：纯进程级网络接管，只让指定 AI 应用走代理，内网 VPN、局域网访问与日常应用完全不受干扰。
-- 🤖 **深度适配主流桌面 AI 应用**：开箱支持 ChatGPT、Claude、Antigravity 桌面版与 Antigravity IDE，并支持一键添加任意 Chromium / Electron 应用（如 Cursor、Windsurf）。
+- 🤖 **深度适配主流桌面 AI 应用**：开箱支持 ChatGPT、Claude、Gemini 桌面版、Antigravity 桌面版与 Antigravity IDE，并支持一键添加任意 Chromium / Electron 应用（如 Cursor、Windsurf）。
 - 🎛️ **多应用并发与独立分流**：卡片式并列管理，各应用独立切换「走代理 / 直连」；支持本地代理端口一键扫描与 `NO_PROXY` 绕过规则。
 - 🔄 **智能状态感知与安全重启**：实时感知运行状态、直连冲突与代理端口变更；优先发送窗口平滑退出信号，保障工作区内容安全。
 - 🩺 **四维立体连接诊断**：包含代理隧道可达性、命令行启动参数、LSP 子进程环境继承及内核级 TCP 连接快照，支持一键隐私脱敏导出。

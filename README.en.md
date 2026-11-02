@@ -19,6 +19,7 @@
 
 - 🤖 **ChatGPT** (compatible with Windows Store/standalone, macOS App Bundles, and Linux desktop clients)
 - 🧠 **Claude** (compatible with Windows MSIX/Squirrel, macOS App Bundles, and Linux desktop clients)
+- ✨ **Gemini Desktop** (compatible with Windows Squirrel, macOS App Bundles, and Linux desktop clients)
 - 🌌 **Antigravity Desktop**
 - ⚡ **Antigravity IDE** (strict app disambiguation & dedicated LSP proxy inheritance checks)
 - 🧩 **Custom Extensible**: One-click addition of any Chromium / Electron-based desktop AI app (e.g. Cursor, Windsurf)
@@ -36,7 +37,7 @@
 ## Key Features
 
 - 🎯 **Zero-Global-TUN / No System Proxy Tampering**: Pure process-level network isolation. Routes only designated AI apps through the proxy, leaving internal VPNs, LAN resources, and regular software untouched.
-- 🤖 **Deep Native Adaptation**: Out-of-the-box support for ChatGPT, Claude, Antigravity Desktop, and Antigravity IDE, with one-click custom addition for any Chromium / Electron apps (e.g. Cursor, Windsurf).
+- 🤖 **Deep Native Adaptation**: Out-of-the-box support for ChatGPT, Claude, Gemini Desktop, Antigravity Desktop, and Antigravity IDE, with one-click custom addition for any Chromium / Electron apps (e.g. Cursor, Windsurf).
 - 🎛️ **Concurrent Management & Independent Toggling**: Multi-card dashboard with per-app "Proxied / Direct" switches, local proxy port auto-scanning, and customizable `NO_PROXY` bypass rules.
 - 🔄 **Smart State Sensing & Safe Restart**: Real-time detection of running state, direct conflicts, and proxy port drift; sends graceful close signals first to safeguard workspace data.
 - 🩺 **Four-Dimensional Diagnostics Engine**: Comprehensive diagnostics spanning upstream tunnel reachability, main CLI arguments, LSP child process env inheritance, and kernel-level TCP snapshots with one-click privacy redaction.

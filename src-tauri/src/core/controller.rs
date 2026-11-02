@@ -49,6 +49,71 @@ pub fn extract_proxy_arg(cmd: &[String]) -> Option<String> {
     None
 }
 
+pub fn get_gemini_profile_proxy() -> Option<String> {
+    if let Some(appdata) = dirs::config_dir() {
+        for sub in &["gemini", "Gemini", "Google/Gemini", "google-gemini"] {
+            let pref_path = appdata.join(sub).join("Preferences");
+            if pref_path.is_file() {
+                if let Ok(content) = std::fs::read_to_string(&pref_path) {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if let Some(proxy_obj) = val.get("proxy") {
+                            if let Some(server) = proxy_obj.get("server").and_then(|s| s.as_str()) {
+                                return Some(server.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn sync_gemini_profile_proxy(proxy: &ProxyConfig, enabled: bool) {
+    if let Some(appdata) = dirs::config_dir() {
+        let mut target_dir = None;
+        for sub in &["gemini", "Gemini", "Google/Gemini", "google-gemini"] {
+            let dir = appdata.join(sub);
+            if dir.is_dir() {
+                target_dir = Some(dir);
+                break;
+            }
+        }
+        let target_dir = target_dir.unwrap_or_else(|| appdata.join("gemini"));
+        let pref_path = target_dir.join("Preferences");
+        let mut val: serde_json::Value = if pref_path.is_file() {
+            match std::fs::read_to_string(&pref_path) {
+                Ok(content) => serde_json::from_str(&content).unwrap_or_else(|e| {
+                    eprintln!("[WARN] 解析 Gemini Preferences 失败: {}", e);
+                    serde_json::json!({})
+                }),
+                Err(_) => serde_json::json!({}),
+            }
+        } else {
+            serde_json::json!({})
+        };
+
+        if enabled {
+            val["proxy"] = serde_json::json!({
+                "mode": "fixed_servers",
+                "server": format!("{}:{}", proxy.host, proxy.port),
+                "bypass_list": format_chromium_bypass_list(&proxy.no_proxy)
+            });
+        } else if let Some(obj) = val.as_object_mut() {
+            obj.remove("proxy");
+        }
+
+        let _ = std::fs::create_dir_all(&target_dir);
+        if let Ok(new_content) = serde_json::to_string_pretty(&val) {
+            // Write atomically via a temporary file to prevent corruption
+            let tmp_path = target_dir.join("Preferences.tmp");
+            if std::fs::write(&tmp_path, new_content).is_ok() {
+                let _ = std::fs::rename(&tmp_path, &pref_path);
+            }
+        }
+    }
+}
+
 pub fn is_executable_present(path: &Path) -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -61,6 +126,16 @@ pub fn is_executable_present(path: &Path) -> bool {
                 if let Ok(entries) = std::fs::read_dir(macos_dir) {
                     return entries.filter_map(|e| e.ok()).any(|e| e.path().is_file());
                 }
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if path.is_dir() {
+            let resolved = crate::platforms::resolve_executable_for_launch(&path.to_string_lossy());
+            if Path::new(&resolved).is_file() {
+                return true;
             }
         }
     }
@@ -87,7 +162,10 @@ fn is_matching_exe_name(actual_name: &str, target_name: &str) -> bool {
     clean_actual == clean_target
         || matches!(
             (clean_actual, clean_target),
-            ("chatgpt", "chatgpt-desktop") | ("chatgpt-desktop", "chatgpt")
+            ("chatgpt", "chatgpt-desktop")
+                | ("chatgpt-desktop", "chatgpt")
+                | ("gemini", "gemini-desktop")
+                | ("gemini-desktop", "gemini")
         )
 }
 
@@ -269,7 +347,11 @@ pub fn inspect_app_state(sys: &System, spec: &TargetAppSpec, proxy: &ProxyConfig
         };
     }
 
-    let detected_proxy = extract_proxy_arg(&main_cmdline);
+    let detected_proxy = if spec.id == "gemini" {
+        get_gemini_profile_proxy()
+    } else {
+        extract_proxy_arg(&main_cmdline)
+    };
     let expected_authority = proxy.authority().to_lowercase();
 
     let status = if !spec.proxy_enabled {
@@ -340,13 +422,19 @@ pub fn launch_target(spec: &TargetAppSpec, proxy: &ProxyConfig) -> Result<u32, S
         }
     }
 
+    if spec.id == "gemini" {
+        sync_gemini_profile_proxy(proxy, spec.proxy_enabled);
+    }
+
     if spec.proxy_enabled {
         let proxy_url = proxy.url();
         let bypass_list = format_chromium_bypass_list(&proxy.no_proxy);
         let no_proxy_env = format_no_proxy_env(&proxy.no_proxy);
 
-        cmd.arg(format!("--proxy-server={}", proxy_url));
-        cmd.arg(format!("--proxy-bypass-list={}", bypass_list));
+        if spec.id != "gemini" {
+            cmd.arg(format!("--proxy-server={}", proxy_url));
+            cmd.arg(format!("--proxy-bypass-list={}", bypass_list));
+        }
         cmd.arg("--disable-quic");
 
         cmd.env("HTTP_PROXY", &proxy_url);

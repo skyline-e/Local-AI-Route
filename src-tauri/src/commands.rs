@@ -1,6 +1,6 @@
 use crate::core::controller::{
     ensure_stopped_before_relaunch, inspect_app_state, launch_target, refresh_processes_for_inspection,
-    should_heal_builtin_path, stop_target,
+    should_heal_builtin_path, stop_target, sync_gemini_profile_proxy,
 };
 use crate::core::diagnostics::run_diagnostics as run_diag_internal;
 use crate::core::models::{AppRuntimeState, AppSettings, DiagReport, RunStatus, TargetAppSpec, TargetOverride};
@@ -66,6 +66,9 @@ pub fn save_settings(app: tauri::AppHandle, new_settings: AppSettings, state: St
         let _ = autolaunch.enable();
     } else {
         let _ = autolaunch.disable();
+    }
+    if let Some(gemini_target) = find_target_spec(&new_settings, "gemini") {
+        sync_gemini_profile_proxy(&new_settings.proxy, gemini_target.proxy_enabled);
     }
     let mut current = safe_lock(&state.settings);
     *current = new_settings;

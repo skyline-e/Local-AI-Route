@@ -19,6 +19,7 @@ pub fn discover_target_executable(app_id: &str) -> Option<String> {
     let candidate_names: &[&str] = match app_id {
         "chatgpt" => &["chatgpt", "chatgpt-desktop", "openai-chatgpt"],
         "claude" => &["claude", "claude-desktop", "anthropic-claude"],
+        "gemini" => &["gemini", "gemini-desktop", "google-gemini"],
         "antigravity-app" => &["antigravity", "antigravity-desktop"],
         "antigravity-ide" => &["antigravity-ide", "antigravity_ide"],
         _ => return None,
@@ -62,6 +63,7 @@ pub fn discover_target_executable(app_id: &str) -> Option<String> {
     let opt_subdirs: &[&str] = match app_id {
         "chatgpt" => &["ChatGPT", "chatgpt", "chatgpt-desktop"],
         "claude" => &["Claude", "claude", "claude-desktop"],
+        "gemini" => &["Gemini", "gemini", "gemini-desktop", "Google Gemini"],
         "antigravity-app" => &["Antigravity", "antigravity"],
         "antigravity-ide" => &["AntigravityIDE", "antigravity-ide", "antigravity_ide"],
         _ => &[],

@@ -6,8 +6,61 @@ use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ};
 use winreg::RegKey;
 
 #[cfg(target_os = "windows")]
-pub fn resolve_executable_for_launch(path: &str) -> String {
-    path.to_string()
+pub fn resolve_executable_for_launch(path_str: &str) -> String {
+    let p = Path::new(path_str);
+    if p.is_dir() {
+        // 1. Try finding squirrel app-* latest exe
+        if let Some(sq) = find_latest_squirrel_exe(p, "Gemini.exe")
+            .or_else(|| find_latest_squirrel_exe(p, "Claude.exe"))
+        {
+            return sq;
+        }
+
+        // 2. Try dir_name.exe
+        if let Some(dir_name) = p.file_name().and_then(|n| n.to_str()) {
+            let candidate = p.join(format!("{}.exe", dir_name));
+            if candidate.is_file() {
+                return candidate.to_string_lossy().to_string();
+            }
+        }
+
+        // 3. Try any executable in p directly (excluding uninstallers/updaters)
+        if let Ok(entries) = std::fs::read_dir(p) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let candidate = entry.path();
+                if candidate.is_file()
+                    && candidate
+                        .extension()
+                        .map_or(false, |ext| ext.eq_ignore_ascii_case("exe"))
+                {
+                    let fname = candidate
+                        .file_name()
+                        .and_then(|f| f.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    if !matches!(fname.as_str(), "update.exe" | "uninstall.exe" | "unins000.exe") {
+                        return candidate.to_string_lossy().to_string();
+                    }
+                }
+            }
+        }
+    } else if p.is_file() {
+        if let Some(parent) = p.parent() {
+            let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let parent_is_app_ver = parent
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map_or(false, |s| s.to_lowercase().starts_with("app-"));
+            if !parent_is_app_ver {
+                // 若用户选中或配置了 Squirrel 根目录启动桩（如 %LOCALAPPDATA%\Google\Gemini\Gemini.exe 约400KB），
+                // 自动重定向至 app-*\ 子目录下的真实 Electron 运行实体（约240MB），确保命令行参数与环境直达注入。
+                if let Some(latest) = find_latest_squirrel_exe(parent, fname) {
+                    return latest;
+                }
+            }
+        }
+    }
+    path_str.to_string()
 }
 
 #[cfg(target_os = "windows")]
@@ -112,6 +165,49 @@ pub fn discover_target_executable(app_id: &str) -> Option<String> {
                 if is_executable_or_alias(&alias) {
                     return Some(alias.to_string_lossy().to_string());
                 }
+            }
+        }
+        "gemini" => {
+            // 1. Check Google\Gemini in %LOCALAPPDATA%
+            if !local_app_data.is_empty() {
+                let gemini_root = Path::new(&local_app_data).join("Google").join("Gemini");
+                if let Some(found) = find_latest_squirrel_exe(&gemini_root, "Gemini.exe") {
+                    return Some(found);
+                }
+                let stub = gemini_root.join("Gemini.exe");
+                if stub.is_file() {
+                    return Some(stub.to_string_lossy().to_string());
+                }
+                for sub in &[
+                    r"Programs\Gemini\Gemini.exe",
+                    r"Programs\Google\Gemini\Gemini.exe",
+                ] {
+                    let candidate = Path::new(&local_app_data).join(sub);
+                    if candidate.is_file() {
+                        return Some(candidate.to_string_lossy().to_string());
+                    }
+                }
+            }
+
+            // 2. Check ProgramFiles / ProgramFiles(x86)
+            for base in &[&prog_files, &prog_files_x86] {
+                if base.is_empty() {
+                    continue;
+                }
+                for sub in &[
+                    r"Google\Gemini\Gemini.exe",
+                    r"Gemini\Gemini.exe",
+                ] {
+                    let candidate = Path::new(base).join(sub);
+                    if candidate.is_file() {
+                        return Some(candidate.to_string_lossy().to_string());
+                    }
+                }
+            }
+
+            // 3. Check Uninstall registry
+            if let Some(path) = search_uninstall_registry("gemini", false, "Gemini.exe") {
+                return Some(path);
             }
         }
         "antigravity-app" => {
