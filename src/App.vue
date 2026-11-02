@@ -32,6 +32,11 @@ import {
   AlertCircle,
   Info,
   Trash2,
+  Network,
+  Sliders,
+  Folder,
+  Cpu,
+  Terminal,
 } from "lucide-vue-next";
 
 const settings = ref<AppSettings>({
@@ -56,6 +61,22 @@ const scannedPorts = ref<number[]>([]);
 const isScanning = ref(false);
 const showPortDropdown = ref(false);
 const saveSuccess = ref(false);
+
+// Active navigation item: 'global-proxy' or target app ID
+const activeNavId = ref<string>("global-proxy");
+
+const allTargets = computed<TargetAppSpec[]>(() => effectiveTargets.value);
+
+const currentTarget = computed<TargetAppSpec | undefined>(() => {
+  return allTargets.value.find((t) => t.id === activeNavId.value);
+});
+
+function selectNav(id: string) {
+  activeNavId.value = id;
+  try {
+    localStorage.setItem("local_ai_route_last_tab", id);
+  } catch {}
+}
 
 // Toast Notification System
 interface Toast {
@@ -135,6 +156,13 @@ async function refreshTargets() {
   try {
     const list = await invoke<TargetAppSpec[]>("get_effective_targets");
     effectiveTargets.value = list;
+    if (activeNavId.value !== "global-proxy" && !list.some((t) => t.id === activeNavId.value)) {
+      if (list.length > 0) {
+        selectNav(list[0].id);
+      } else {
+        selectNav("global-proxy");
+      }
+    }
   } catch (err) {
     console.error("Failed to load effective targets:", err);
   }
@@ -150,6 +178,19 @@ async function loadInitialData() {
     applyTheme(res.theme || "system");
     await refreshTargets();
     await refreshStatuses();
+
+    // Restore last active navigation tab
+    let savedTab: string | null = null;
+    try {
+      savedTab = localStorage.getItem("local_ai_route_last_tab");
+    } catch {}
+    if (savedTab && (savedTab === "global-proxy" || effectiveTargets.value.some((t) => t.id === savedTab))) {
+      activeNavId.value = savedTab;
+    } else if (effectiveTargets.value.length > 0) {
+      activeNavId.value = effectiveTargets.value[0].id;
+    } else {
+      activeNavId.value = "global-proxy";
+    }
   } catch (err) {
     showToast(`Failed to load settings: ${err}`, "error");
   }
@@ -201,8 +242,6 @@ function selectScannedPort(port: number) {
   showPortDropdown.value = false;
 }
 
-const allTargets = computed<TargetAppSpec[]>(() => effectiveTargets.value);
-
 async function toggleProxyMode(target: TargetAppSpec) {
   const nextVal = !target.proxy_enabled;
   if (target.builtin) {
@@ -247,7 +286,7 @@ async function handleAutoDetect(appId: string) {
         settings.value.targets[appId].exe_path = detected;
       }
       await saveCurrentSettings();
-      showToast("已自动检测并填入路径", "success");
+      showToast(t("toast_auto_detect_success"), "success");
     } else {
       showToast(t("toast_auto_detect_failed"), "warn");
     }
@@ -295,7 +334,7 @@ async function executeStop(target: TargetAppSpec, force = false) {
   try {
     await invoke("stop_app", { appId: target.id, force });
     await refreshStatuses();
-    showToast(force ? "已强制结束进程" : "已请求安全退出", "info");
+    showToast(force ? t("toast_force_stopped") : t("toast_graceful_stopped"), "info");
   } catch (err) {
     showToast(`Stop failed: ${err}`, "error");
   } finally {
@@ -348,6 +387,7 @@ function handleAddCustomApp() {
   settings.value.custom_apps.push(newApp);
   saveCurrentSettings();
   addModalOpen.value = false;
+  selectNav(id);
   customAppForm.value = { id: "", name: "", name_en: "", exe_path: "", probe_url: "", warn_unsaved: false };
 }
 
@@ -366,6 +406,10 @@ async function executeRemoveCustomApp() {
   settings.value.custom_apps = settings.value.custom_apps.filter((a) => a.id !== targetId);
   delete settings.value.targets[targetId];
   await saveCurrentSettings();
+  if (activeNavId.value === targetId) {
+    const nextTarget = allTargets.value[0]?.id || "global-proxy";
+    selectNav(nextTarget);
+  }
   confirmRemoveModal.value = { open: false, appId: "", appName: "", isRunning: false };
   showToast(t("toast_app_removed"), "success");
 }
@@ -417,7 +461,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="min-h-screen flex flex-col p-5 max-w-5xl mx-auto space-y-5">
+  <div class="h-screen flex flex-col p-4 max-w-6xl mx-auto space-y-3 overflow-hidden select-none">
     <!-- Toast Notification Container -->
     <div class="fixed top-4 right-4 z-50 flex flex-col gap-2 max-w-sm pointer-events-none">
       <div
@@ -440,23 +484,23 @@ onUnmounted(() => {
     </div>
 
     <!-- Top Header -->
-    <header class="flex items-center justify-between bg-white dark:bg-slate-800 p-4 rounded-xl shadow-sm border border-slate-200/80 dark:border-slate-700/80">
+    <header class="flex items-center justify-between bg-white dark:bg-slate-800 px-4 py-2.5 rounded-xl shadow-sm border border-slate-200/80 dark:border-slate-700/80 shrink-0">
       <div class="flex items-center gap-3">
-        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center text-white shadow-md shadow-sky-500/20">
-          <Zap class="w-6 h-6" />
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center text-white shadow-md shadow-sky-500/20 shrink-0">
+          <Zap class="w-5 h-5" />
         </div>
         <div>
-          <h1 class="text-xl font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
+          <h1 class="text-base font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
             {{ t("app_title") }}
-            <span class="text-xs px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300 font-mono">v0.2.2 (Tauri)</span>
+            <span class="text-[10px] px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300 font-mono">v0.2.3</span>
           </h1>
-          <p class="text-xs text-slate-500 dark:text-slate-400">{{ t("app_subtitle") }}</p>
+          <p class="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">{{ t("app_subtitle") }}</p>
         </div>
       </div>
 
-      <div class="flex items-center gap-3">
+      <div class="flex items-center gap-2.5">
         <!-- Autostart Toggle -->
-        <label class="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300 cursor-pointer select-none px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 transition">
+        <label class="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300 cursor-pointer select-none px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 transition">
           <input
             type="checkbox"
             v-model="settings.autostart"
@@ -469,7 +513,7 @@ onUnmounted(() => {
         <!-- Language Switch -->
         <button
           @click="currentLang = currentLang === 'zh-CN' ? 'en-US' : 'zh-CN'; saveCurrentSettings();"
-          class="px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 transition"
+          class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 transition"
         >
           <Globe class="w-3.5 h-3.5 inline mr-1" />
           {{ currentLang === 'zh-CN' ? 'English' : '简体中文' }}
@@ -479,21 +523,21 @@ onUnmounted(() => {
         <div class="flex items-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/50 p-0.5">
           <button
             @click="applyTheme('light'); saveCurrentSettings();"
-            :class="['p-1.5 rounded-md text-xs transition', settings.theme === 'light' ? 'bg-white dark:bg-slate-600 shadow-sm text-amber-500' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200']"
+            :class="['p-1 rounded-md text-xs transition', settings.theme === 'light' ? 'bg-white dark:bg-slate-600 shadow-sm text-amber-500' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200']"
             title="Light"
           >
             <Sun class="w-3.5 h-3.5" />
           </button>
           <button
             @click="applyTheme('dark'); saveCurrentSettings();"
-            :class="['p-1.5 rounded-md text-xs transition', settings.theme === 'dark' ? 'bg-white dark:bg-slate-600 shadow-sm text-sky-400' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200']"
+            :class="['p-1 rounded-md text-xs transition', settings.theme === 'dark' ? 'bg-white dark:bg-slate-600 shadow-sm text-sky-400' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200']"
             title="Dark"
           >
             <Moon class="w-3.5 h-3.5" />
           </button>
           <button
             @click="applyTheme('system'); saveCurrentSettings();"
-            :class="['p-1.5 rounded-md text-xs transition', settings.theme === 'system' ? 'bg-white dark:bg-slate-600 shadow-sm text-indigo-500' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200']"
+            :class="['p-1 rounded-md text-xs transition', settings.theme === 'system' ? 'bg-white dark:bg-slate-600 shadow-sm text-indigo-500' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200']"
             title="System"
           >
             <Monitor class="w-3.5 h-3.5" />
@@ -502,162 +546,316 @@ onUnmounted(() => {
       </div>
     </header>
 
-    <!-- Global Proxy Card -->
-    <section class="bg-white dark:bg-slate-800 p-5 rounded-xl shadow-sm border border-slate-200/80 dark:border-slate-700/80 space-y-4">
-      <div class="flex items-center justify-between border-b border-slate-100 dark:border-slate-700/50 pb-3">
-        <div class="flex items-center gap-2 text-slate-900 dark:text-white font-semibold">
-          <ShieldCheck class="w-5 h-5 text-sky-500" />
-          <span>{{ t("global_proxy_title") }}</span>
-        </div>
-        <div class="flex items-center gap-2">
-          <span v-if="saveSuccess" class="text-xs text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
-            <Check class="w-3.5 h-3.5" /> {{ t("config_saved") }}
-          </span>
+    <!-- Main Body: Split Left Sidebar & Right Detail Area -->
+    <div class="flex-1 flex gap-4 overflow-hidden min-h-0">
+      <!-- Left Navigation Sidebar -->
+      <aside class="w-64 flex flex-col bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200/80 dark:border-slate-700/80 p-3 overflow-hidden select-none shrink-0">
+        <!-- Nav Item: Global Proxy Settings -->
+        <div class="mb-3">
           <button
-            @click="saveCurrentSettings"
-            class="px-4 py-1.5 text-xs font-medium rounded-lg bg-sky-600 text-white hover:bg-sky-700 transition shadow-sm"
+            @click="selectNav('global-proxy')"
+            :class="[
+              'w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-semibold transition border text-left',
+              activeNavId === 'global-proxy'
+                ? 'bg-sky-50 dark:bg-sky-950/50 text-sky-700 dark:text-sky-300 border-sky-300 dark:border-sky-800 shadow-sm'
+                : 'border-transparent text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700/60'
+            ]"
           >
-            {{ t("save_proxy") }}
+            <div class="flex items-center gap-2.5">
+              <Network class="w-4 h-4 text-sky-500 shrink-0" />
+              <span>{{ t("nav_global_proxy") }}</span>
+            </div>
+            <span class="text-[10px] font-mono font-normal px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400">
+              :{{ settings.proxy.port }}
+            </span>
           </button>
         </div>
-      </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <!-- Scheme -->
-        <div>
-          <label class="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">{{ t("proxy_scheme") }}</label>
-          <select
-            v-model="settings.proxy.scheme"
-            class="w-full text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 p-2 focus:ring-2 focus:ring-sky-500 outline-none"
-          >
-            <option value="http">HTTP</option>
-            <option value="socks5">SOCKS5</option>
-          </select>
+        <!-- Section Title: AI Apps -->
+        <div class="flex items-center justify-between px-1 mb-2">
+          <span class="text-[11px] font-bold text-slate-400 uppercase tracking-wider">{{ t("nav_apps_group") }}</span>
+          <span class="text-[10px] text-slate-400 font-mono">{{ allTargets.length }}</span>
         </div>
 
-        <!-- Host -->
-        <div>
-          <label class="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">{{ t("proxy_host") }}</label>
-          <input
-            v-model="settings.proxy.host"
-            type="text"
-            placeholder="127.0.0.1"
-            class="w-full text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 p-2 focus:ring-2 focus:ring-sky-500 outline-none"
-          />
-        </div>
-
-        <!-- Port with Scanner -->
-        <div class="relative">
-          <div class="flex items-center justify-between mb-1.5">
-            <label class="text-xs font-medium text-slate-600 dark:text-slate-300">{{ t("proxy_port") }}</label>
-            <button
-              @click="handleScanPorts"
-              class="text-xs text-sky-600 dark:text-sky-400 hover:underline flex items-center gap-1 font-medium"
-            >
-              <Search class="w-3 h-3" />
-              {{ isScanning ? '扫描中...' : t("scan_ports") }}
-            </button>
-          </div>
-          <input
-            v-model.number="settings.proxy.port"
-            type="number"
-            placeholder="7890"
-            class="w-full text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 p-2 focus:ring-2 focus:ring-sky-500 outline-none"
-          />
-
-          <!-- Scanned Ports Dropdown -->
+        <!-- Apps List Container -->
+        <div class="flex-1 overflow-y-auto space-y-1 pr-0.5 min-h-0">
           <div
-            v-if="showPortDropdown && scannedPorts.length > 0"
-            class="absolute z-20 left-0 right-0 mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg overflow-hidden py-1"
+            v-for="target in allTargets"
+            :key="target.id"
+            tabindex="0"
+            @click="selectNav(target.id)"
+            @keydown.enter="selectNav(target.id)"
+            :class="[
+              'group w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs transition border cursor-pointer select-none outline-none focus:ring-1 focus:ring-sky-500',
+              activeNavId === target.id
+                ? 'bg-sky-50 dark:bg-sky-950/50 text-sky-700 dark:text-sky-300 border-sky-300 dark:border-sky-800 shadow-sm font-semibold'
+                : 'border-transparent text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700/60 font-medium'
+            ]"
           >
-            <div class="text-xs px-3 py-1 font-semibold text-slate-400 border-b border-slate-100 dark:border-slate-700">检测到的本地监听端口:</div>
-            <button
-              v-for="p in scannedPorts"
-              :key="p"
-              @click="selectScannedPort(p)"
-              class="w-full text-left px-3 py-1.5 text-xs text-slate-700 dark:text-slate-200 hover:bg-sky-50 dark:hover:bg-slate-700/60 flex items-center justify-between"
-            >
-              <span class="font-mono font-medium">{{ p }}</span>
-              <span class="text-emerald-500 text-[10px]">在线</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- NO_PROXY Bypass Collapsible -->
-      <div class="border-t border-slate-100 dark:border-slate-700/40 pt-3">
-        <button
-          @click="showNoProxy = !showNoProxy"
-          class="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition font-medium"
-        >
-          <component :is="showNoProxy ? ChevronUp : ChevronDown" class="w-3.5 h-3.5" />
-          {{ t("no_proxy_bypass") }}
-        </button>
-
-        <div v-if="showNoProxy" class="mt-2">
-          <textarea
-            v-model="settings.proxy.no_proxy"
-            rows="2"
-            class="w-full text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 p-2.5 focus:ring-2 focus:ring-sky-500 outline-none"
-          ></textarea>
-        </div>
-      </div>
-    </section>
-
-    <!-- Target Apps Grid -->
-    <section class="space-y-4">
-      <div class="flex items-center justify-between px-1">
-        <h2 class="text-sm font-bold text-slate-700 dark:text-slate-200 tracking-wide uppercase">AI 应用列表 (Target Apps)</h2>
-        <button
-          @click="addModalOpen = true"
-          class="text-xs font-medium text-sky-600 dark:text-sky-400 hover:text-sky-700 flex items-center gap-1"
-        >
-          <Plus class="w-3.5 h-3.5" /> {{ t("add_custom_app") }}
-        </button>
-      </div>
-
-      <div class="grid grid-cols-1 gap-4">
-        <div
-          v-for="target in allTargets"
-          :key="target.id"
-          class="bg-white dark:bg-slate-800 p-5 rounded-xl shadow-sm border border-slate-200/80 dark:border-slate-700/80 flex flex-col justify-between space-y-4 transition hover:border-slate-300 dark:hover:border-slate-600"
-        >
-          <!-- Card Top: Name & Badges -->
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-2.5">
-              <h3 class="font-bold text-slate-900 dark:text-white text-base">
-                {{ currentLang === 'en-US' && target.name_en ? target.name_en : target.name }}
-              </h3>
+            <!-- Left: Status dot + App Name -->
+            <div class="flex items-center gap-2 min-w-0 pr-1">
               <span
-                :class="['text-xs px-2.5 py-0.5 rounded-full border font-medium flex items-center gap-1.5', statusColor(appStatuses[target.id]?.status)]"
-              >
-                <span class="w-1.5 h-1.5 rounded-full bg-current animate-pulse"></span>
-                {{ statusText(appStatuses[target.id]?.status) }}
+                :class="[
+                  'w-2 h-2 rounded-full shrink-0',
+                  appStatuses[target.id]?.status === 'running_proxied' ? 'bg-emerald-500 ring-2 ring-emerald-500/20' :
+                  appStatuses[target.id]?.status === 'running_direct' ? 'bg-sky-500 ring-2 ring-sky-500/20' :
+                  appStatuses[target.id]?.status === 'running_unproxied' ? 'bg-amber-500 ring-2 ring-amber-500/20 animate-pulse' :
+                  appStatuses[target.id]?.status === 'restart_needed' ? 'bg-rose-500 ring-2 ring-rose-500/20 animate-pulse' :
+                  'bg-slate-300 dark:bg-slate-600'
+                ]"
+              ></span>
+              <span class="truncate">
+                {{ currentLang === 'en-US' && target.name_en ? target.name_en : target.name }}
               </span>
             </div>
 
-            <!-- Mode Switch (Proxied vs Direct) & Actions -->
-            <div class="flex items-center gap-2">
-              <div class="flex items-center bg-slate-100 dark:bg-slate-900/70 p-0.5 rounded-lg border border-slate-200 dark:border-slate-700">
+            <!-- Right: Status Tag (default) OR Quick Action Button (on Hover) -->
+            <div class="shrink-0 flex items-center">
+              <!-- Default state badge -->
+              <span
+                :class="[
+                  'group-hover:hidden text-[10px] font-mono px-1.5 py-0.5 rounded border transition',
+                  statusColor(appStatuses[target.id]?.status)
+                ]"
+              >
+                {{ statusText(appStatuses[target.id]?.status) }}
+              </span>
+
+              <!-- Hover state quick action button -->
+              <div class="hidden group-hover:flex group-focus-within:flex items-center gap-1" @click.stop>
+                <!-- Stop button if running -->
                 <button
-                  @click="!target.proxy_enabled && toggleProxyMode(target)"
-                  :class="['px-2.5 py-1 text-xs font-medium rounded-md transition', target.proxy_enabled ? 'bg-sky-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200']"
+                  v-if="appStatuses[target.id]?.status && appStatuses[target.id]?.status !== 'stopped'"
+                  @click.stop="handleStop(target)"
+                  class="p-1 rounded bg-rose-100 hover:bg-rose-200 dark:bg-rose-950/60 dark:hover:bg-rose-900 text-rose-600 dark:text-rose-400 transition"
+                  :title="t('quick_stop')"
                 >
-                  {{ t("mode_proxied") }}
+                  <Square class="w-3 h-3 fill-current" />
                 </button>
+
+                <!-- Launch / Restart button -->
                 <button
-                  @click="target.proxy_enabled && toggleProxyMode(target)"
-                  :class="['px-2.5 py-1 text-xs font-medium rounded-md transition', !target.proxy_enabled ? 'bg-slate-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200']"
+                  v-else
+                  @click.stop="handleLaunch(target)"
+                  :disabled="Boolean(launchingIds[target.id])"
+                  class="p-1 rounded bg-emerald-100 hover:bg-emerald-200 dark:bg-emerald-950/60 dark:hover:bg-emerald-900 text-emerald-600 dark:text-emerald-400 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                  :title="t('quick_launch')"
                 >
-                  {{ t("mode_direct") }}
+                  <RotateCw v-if="launchingIds[target.id]" class="w-3 h-3 animate-spin" />
+                  <Play v-else class="w-3 h-3 fill-current" />
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
 
-              <!-- Delete Custom App Button -->
+        <!-- Bottom Add Custom App Button -->
+        <div class="pt-3 border-t border-slate-100 dark:border-slate-700/60 mt-2 shrink-0">
+          <button
+            @click="addModalOpen = true"
+            class="w-full py-2 px-3 text-xs font-medium text-sky-600 dark:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-950/40 rounded-lg flex items-center justify-center gap-1.5 border border-dashed border-sky-300 dark:border-sky-800 transition"
+          >
+            <Plus class="w-3.5 h-3.5" />
+            <span>{{ t("add_custom_app") }}</span>
+          </button>
+        </div>
+      </aside>
+
+      <!-- Right Main Content Panel -->
+      <main class="flex-1 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200/80 dark:border-slate-700/80 p-5 overflow-y-auto flex flex-col min-h-0 space-y-4">
+        
+        <!-- VIEW 1: Global Proxy Settings -->
+        <template v-if="activeNavId === 'global-proxy'">
+          <!-- Header -->
+          <div class="flex items-center justify-between border-b border-slate-100 dark:border-slate-700/60 pb-3 shrink-0">
+            <div class="flex items-center gap-2.5">
+              <div class="w-8 h-8 rounded-lg bg-sky-50 dark:bg-sky-950/60 flex items-center justify-center text-sky-600 dark:text-sky-400">
+                <ShieldCheck class="w-5 h-5" />
+              </div>
+              <div>
+                <h2 class="text-base font-bold text-slate-900 dark:text-white">{{ t("global_proxy_title") }}</h2>
+                <p class="text-xs text-slate-500 dark:text-slate-400">{{ t("global_proxy_desc") }}</p>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <span v-if="saveSuccess" class="text-xs text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
+                <Check class="w-3.5 h-3.5" /> {{ t("config_saved") }}
+              </span>
               <button
-                v-if="!target.builtin"
-                @click="handlePromptRemoveCustomApp(target)"
-                class="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
+                @click="saveCurrentSettings"
+                class="px-4 py-1.5 text-xs font-medium rounded-lg bg-sky-600 text-white hover:bg-sky-700 transition shadow-sm"
+              >
+                {{ t("save_proxy") }}
+              </button>
+            </div>
+          </div>
+
+          <!-- Proxy Protocol / Host / Port Form -->
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <!-- Scheme -->
+            <div>
+              <label class="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">{{ t("proxy_scheme") }}</label>
+              <select
+                v-model="settings.proxy.scheme"
+                class="w-full text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 p-2.5 focus:ring-2 focus:ring-sky-500 outline-none"
+              >
+                <option value="http">HTTP</option>
+                <option value="socks5">SOCKS5</option>
+              </select>
+            </div>
+
+            <!-- Host -->
+            <div>
+              <label class="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">{{ t("proxy_host") }}</label>
+              <input
+                v-model="settings.proxy.host"
+                type="text"
+                placeholder="127.0.0.1"
+                class="w-full text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 p-2.5 focus:ring-2 focus:ring-sky-500 outline-none"
+              />
+            </div>
+
+            <!-- Port with Scanner -->
+            <div class="relative">
+              <div class="flex items-center justify-between mb-1.5">
+                <label class="text-xs font-medium text-slate-600 dark:text-slate-300">{{ t("proxy_port") }}</label>
+                <button
+                  @click="handleScanPorts"
+                  :disabled="isScanning"
+                  class="text-xs text-sky-600 dark:text-sky-400 hover:underline flex items-center gap-1 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Search :class="['w-3 h-3', isScanning ? 'animate-spin' : '']" />
+                  {{ isScanning ? t("scanning_ports") : t("scan_ports") }}
+                </button>
+              </div>
+              <input
+                v-model.number="settings.proxy.port"
+                type="number"
+                placeholder="7890"
+                class="w-full text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 p-2.5 focus:ring-2 focus:ring-sky-500 outline-none"
+              />
+
+              <!-- Scanned Ports Dropdown -->
+              <div
+                v-if="showPortDropdown && scannedPorts.length > 0"
+                class="absolute z-20 left-0 right-0 mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg overflow-hidden py-1"
+              >
+                <div class="text-xs px-3 py-1 font-semibold text-slate-400 border-b border-slate-100 dark:border-slate-700">{{ t("scanned_ports_title") }}</div>
+                <button
+                  v-for="p in scannedPorts"
+                  :key="p"
+                  @click="selectScannedPort(p)"
+                  class="w-full text-left px-3 py-1.5 text-xs text-slate-700 dark:text-slate-200 hover:bg-sky-50 dark:hover:bg-slate-700/60 flex items-center justify-between"
+                >
+                  <span class="font-mono font-medium">{{ p }}</span>
+                  <span class="text-emerald-500 text-[10px]">{{ t("port_online") }}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- NO_PROXY Bypass Collapsible -->
+          <div class="border-t border-slate-100 dark:border-slate-700/40 pt-4">
+            <button
+              @click="showNoProxy = !showNoProxy"
+              class="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 transition font-medium mb-2"
+            >
+              <component :is="showNoProxy ? ChevronUp : ChevronDown" class="w-3.5 h-3.5" />
+              {{ t("no_proxy_bypass") }}
+            </button>
+
+            <div v-if="showNoProxy" class="space-y-1">
+              <textarea
+                v-model="settings.proxy.no_proxy"
+                rows="3"
+                class="w-full text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 p-2.5 focus:ring-2 focus:ring-sky-500 outline-none"
+              ></textarea>
+              <p class="text-[11px] text-slate-400">{{ t("no_proxy_tip") }}</p>
+            </div>
+          </div>
+        </template>
+
+        <!-- VIEW 2: Selected App Details -->
+        <template v-else-if="currentTarget">
+          <!-- App Detail Header & Primary Action Toolbar -->
+          <div class="flex items-center justify-between border-b border-slate-100 dark:border-slate-700/60 pb-3 shrink-0">
+            <div class="flex items-center gap-3">
+              <div>
+                <div class="flex items-center gap-2">
+                  <h2 class="text-lg font-bold text-slate-900 dark:text-white">
+                    {{ currentLang === 'en-US' && currentTarget.name_en ? currentTarget.name_en : currentTarget.name }}
+                  </h2>
+                  <span
+                    :class="['text-xs px-2.5 py-0.5 rounded-full border font-medium flex items-center gap-1.5', statusColor(appStatuses[currentTarget.id]?.status)]"
+                  >
+                    <span class="w-1.5 h-1.5 rounded-full bg-current animate-pulse"></span>
+                    {{ statusText(appStatuses[currentTarget.id]?.status) }}
+                  </span>
+                  <span v-if="currentTarget.builtin" class="text-[10px] px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-500 font-mono">Builtin</span>
+                  <span v-else class="text-[10px] px-2 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800 font-mono">Custom</span>
+                </div>
+                <p class="text-[11px] text-slate-400 mt-0.5">ID: {{ currentTarget.id }}</p>
+              </div>
+            </div>
+
+            <!-- Actions (Launch, Stop, Diag, Shortcut, Delete) -->
+            <div class="flex items-center gap-2">
+              <!-- Launch / Restart -->
+              <button
+                v-if="appStatuses[currentTarget.id]?.status === 'restart_needed' || appStatuses[currentTarget.id]?.status === 'running_unproxied'"
+                @click="handleLaunch(currentTarget)"
+                :disabled="Boolean(launchingIds[currentTarget.id])"
+                class="px-4 py-2 text-xs font-semibold rounded-lg bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 shadow-sm transition"
+              >
+                <RotateCw :class="['w-3.5 h-3.5', launchingIds[currentTarget.id] ? 'animate-spin' : '']" />
+                {{ t("btn_restart") }}
+              </button>
+              <button
+                v-else
+                @click="handleLaunch(currentTarget)"
+                :disabled="Boolean(launchingIds[currentTarget.id])"
+                class="px-4 py-2 text-xs font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 shadow-sm transition"
+              >
+                <RotateCw v-if="launchingIds[currentTarget.id]" class="w-3.5 h-3.5 animate-spin" />
+                <Play v-else class="w-3.5 h-3.5" />
+                {{ t("btn_launch") }}
+              </button>
+
+              <!-- Stop Button -->
+              <button
+                v-if="appStatuses[currentTarget.id]?.status !== 'stopped'"
+                @click="handleStop(currentTarget)"
+                class="px-3.5 py-2 text-xs font-medium rounded-lg border border-rose-300 dark:border-rose-800/80 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 flex items-center gap-1.5 transition"
+              >
+                <Square class="w-3.5 h-3.5" />
+                {{ t("btn_stop") }}
+              </button>
+
+              <!-- Diagnostics Button -->
+              <button
+                @click="handleRunDiagnostics(currentTarget)"
+                :disabled="isRunningDiag"
+                class="px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Activity :class="['w-3.5 h-3.5 text-sky-500', isRunningDiag ? 'animate-spin' : '']" />
+                {{ isRunningDiag ? t("diag_running") : t("btn_diagnostics") }}
+              </button>
+
+              <!-- Desktop Shortcut -->
+              <button
+                @click="handleCreateShortcut(currentTarget)"
+                class="px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5 transition"
+                :title="t('btn_shortcut_tip')"
+              >
+                <ExternalLink class="w-3.5 h-3.5 text-indigo-500" />
+                {{ t("btn_shortcut") }}
+              </button>
+
+              <!-- Delete Custom App -->
+              <button
+                v-if="!currentTarget.builtin"
+                @click="handlePromptRemoveCustomApp(currentTarget)"
+                class="p-2 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
                 :title="t('btn_remove_app')"
               >
                 <Trash2 class="w-4 h-4" />
@@ -665,79 +863,118 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <!-- Card Middle: Exe Path Input & Auto-detect -->
-          <div>
-            <div class="flex items-center gap-2">
-              <input
-                v-model="target.exe_path"
-                type="text"
-                :placeholder="t('path_not_found')"
-                class="flex-1 text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 p-2 focus:ring-2 focus:ring-sky-500 outline-none text-slate-600 dark:text-slate-300"
-                @change="onTargetExeChange(target)"
-              />
+          <!-- Card 1: 路由代理模式 (Routing Mode) -->
+          <div class="p-4 rounded-xl border border-slate-200/80 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-900/30 space-y-3">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2 text-xs font-bold text-slate-800 dark:text-slate-200">
+                <Sliders class="w-4 h-4 text-sky-500" />
+                <span>{{ t("section_routing_mode") }}</span>
+              </div>
+
+              <!-- Proxied vs Direct Segmented Toggle -->
+              <div class="flex items-center bg-slate-200/80 dark:bg-slate-900 p-0.5 rounded-lg border border-slate-300/80 dark:border-slate-700">
+                <button
+                  @click="!currentTarget.proxy_enabled && toggleProxyMode(currentTarget)"
+                  :class="['px-3 py-1 text-xs font-medium rounded-md transition', currentTarget.proxy_enabled ? 'bg-sky-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200']"
+                >
+                  {{ t("mode_proxied") }}
+                </button>
+                <button
+                  @click="currentTarget.proxy_enabled && toggleProxyMode(currentTarget)"
+                  :class="['px-3 py-1 text-xs font-medium rounded-md transition', !currentTarget.proxy_enabled ? 'bg-slate-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200']"
+                >
+                  {{ t("mode_direct") }}
+                </button>
+              </div>
+            </div>
+
+            <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+              {{ currentTarget.proxy_enabled ? t("mode_proxied_desc") : t("mode_direct_desc") }}
+              <span v-if="currentTarget.proxy_enabled" class="font-mono text-sky-600 dark:text-sky-400 ml-1">
+                ({{ settings.proxy.scheme }}://{{ settings.proxy.host }}:{{ settings.proxy.port }})
+              </span>
+            </p>
+          </div>
+
+          <!-- Card 2: 目标程序路径 (Executable Path) -->
+          <div class="p-4 rounded-xl border border-slate-200/80 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-900/30 space-y-3">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2 text-xs font-bold text-slate-800 dark:text-slate-200">
+                <Folder class="w-4 h-4 text-indigo-500" />
+                <span>{{ t("section_exe_path") }}</span>
+              </div>
               <button
-                v-if="target.builtin"
-                @click="handleAutoDetect(target.id)"
-                class="px-2.5 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 flex items-center gap-1 transition whitespace-nowrap"
+                v-if="currentTarget.builtin"
+                @click="handleAutoDetect(currentTarget.id)"
+                class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 flex items-center gap-1 transition shadow-xs"
               >
                 <Search class="w-3.5 h-3.5" /> {{ t("btn_detect") }}
               </button>
             </div>
-          </div>
-
-          <!-- Card Bottom: Actions -->
-          <div class="flex items-center justify-between border-t border-slate-100 dark:border-slate-700/40 pt-3">
-            <div class="flex items-center gap-2">
-              <!-- Launch / Restart Button -->
-              <button
-                v-if="appStatuses[target.id]?.status === 'restart_needed' || appStatuses[target.id]?.status === 'running_unproxied'"
-                @click="handleLaunch(target)"
-                :disabled="Boolean(launchingIds[target.id])"
-                class="px-4 py-1.5 text-xs font-medium rounded-lg bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 shadow-sm transition"
-              >
-                <RotateCw :class="['w-3.5 h-3.5', launchingIds[target.id] ? 'animate-spin' : '']" /> {{ t("btn_restart") }}
-              </button>
-              <button
-                v-else
-                @click="handleLaunch(target)"
-                :disabled="Boolean(launchingIds[target.id])"
-                class="px-4 py-1.5 text-xs font-medium rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 shadow-sm transition"
-              >
-                <Play class="w-3.5 h-3.5" /> {{ t("btn_launch") }}
-              </button>
-
-              <!-- Stop Button -->
-              <button
-                v-if="appStatuses[target.id]?.status !== 'stopped'"
-                @click="handleStop(target)"
-                class="px-3 py-1.5 text-xs font-medium rounded-lg border border-rose-300 dark:border-rose-800/80 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 flex items-center gap-1.5 transition"
-              >
-                <Square class="w-3.5 h-3.5" /> {{ t("btn_stop") }}
-              </button>
-            </div>
 
             <div class="flex items-center gap-2">
-              <!-- Diagnostics Button -->
-              <button
-                @click="handleRunDiagnostics(target)"
-                class="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5 transition"
-              >
-                <Activity class="w-3.5 h-3.5 text-sky-500" /> {{ t("btn_diagnostics") }}
-              </button>
+              <input
+                v-model="currentTarget.exe_path"
+                type="text"
+                :placeholder="t('path_not_found')"
+                class="flex-1 text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900/60 p-2.5 focus:ring-2 focus:ring-sky-500 outline-none text-slate-700 dark:text-slate-200"
+                @change="onTargetExeChange(currentTarget)"
+              />
+            </div>
 
-              <!-- Shortcut Button -->
-              <button
-                @click="handleCreateShortcut(target)"
-                class="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5 transition"
-                title="在桌面生成带代理参数的快捷方式"
-              >
-                <ExternalLink class="w-3.5 h-3.5 text-indigo-500" /> {{ t("btn_shortcut") }}
-              </button>
+            <!-- Probe URL Display -->
+            <div v-if="currentTarget.probe_urls?.length" class="flex items-center gap-2 text-[11px] text-slate-400">
+              <span>{{ t("probe_endpoint") }}:</span>
+              <span class="font-mono text-slate-500 dark:text-slate-400">{{ currentTarget.probe_urls[0] }}</span>
             </div>
           </div>
+
+          <!-- Card 3: 运行监控与进程信息 (Process Monitoring & Runtime Info) -->
+          <div class="p-4 rounded-xl border border-slate-200/80 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-900/30 space-y-3">
+            <div class="flex items-center gap-2 text-xs font-bold text-slate-800 dark:text-slate-200">
+              <Cpu class="w-4 h-4 text-emerald-500" />
+              <span>{{ t("section_process_info") }}</span>
+            </div>
+
+            <div v-if="appStatuses[currentTarget.id]?.status && appStatuses[currentTarget.id]?.status !== 'stopped'" class="space-y-2.5">
+              <div class="grid grid-cols-2 gap-3 text-xs">
+                <div class="p-2.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200/60 dark:border-slate-700/60">
+                  <span class="text-slate-400 block text-[11px] mb-1">{{ t("process_pid") }}</span>
+                  <span class="font-mono font-bold text-slate-800 dark:text-slate-200">
+                    {{ appStatuses[currentTarget.id]?.pids?.join(", ") || "N/A" }}
+                  </span>
+                </div>
+                <div class="p-2.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200/60 dark:border-slate-700/60">
+                  <span class="text-slate-400 block text-[11px] mb-1">{{ t("process_matched_proxy") }}</span>
+                  <span class="font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                    {{ appStatuses[currentTarget.id]?.matched_proxy || "DIRECT" }}
+                  </span>
+                </div>
+              </div>
+
+              <div v-if="appStatuses[currentTarget.id]?.cmdline_preview" class="p-2.5 rounded-lg bg-slate-900 text-slate-300 font-mono text-[11px] overflow-x-auto">
+                <div class="text-[10px] text-slate-500 uppercase font-sans mb-1 flex items-center gap-1">
+                  <Terminal class="w-3 h-3" />
+                  {{ t("process_cmdline") }}
+                </div>
+                <div class="truncate select-text">{{ appStatuses[currentTarget.id]?.cmdline_preview }}</div>
+              </div>
+            </div>
+
+            <div v-else class="text-xs text-slate-400 dark:text-slate-500 py-1 flex items-center gap-2">
+              <span class="w-1.5 h-1.5 rounded-full bg-slate-300 dark:bg-slate-600"></span>
+              <span>{{ t("app_stopped_idle_tip") }}</span>
+            </div>
+          </div>
+        </template>
+
+        <!-- VIEW 3: Empty Fallback -->
+        <div v-else class="flex-1 flex flex-col items-center justify-center text-slate-400 space-y-2">
+          <Info class="w-8 h-8 text-slate-300 dark:text-slate-600" />
+          <p class="text-xs">{{ t("no_app_selected") }}</p>
         </div>
-      </div>
-    </section>
+      </main>
+    </div>
 
     <!-- Diagnostics Modal -->
     <div

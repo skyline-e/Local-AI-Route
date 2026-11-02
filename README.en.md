@@ -38,7 +38,7 @@
 
 - 🎯 **Zero-Global-TUN / No System Proxy Tampering**: Pure process-level network isolation. Routes only designated AI apps through the proxy, leaving internal VPNs, LAN resources, and regular software untouched.
 - 🤖 **Deep Native Adaptation**: Out-of-the-box support for ChatGPT, Claude, Gemini Desktop, Antigravity Desktop, and Antigravity IDE, with one-click custom addition for any Chromium / Electron apps (e.g. Cursor, Windsurf).
-- 🎛️ **Concurrent Management & Independent Toggling**: Multi-card dashboard with per-app "Proxied / Direct" switches, local proxy port auto-scanning, and customizable `NO_PROXY` bypass rules.
+- 🎛️ **Concurrent Management & Independent Toggling**: Master-Detail split layout completely eliminates vertical page scrolling, featuring quick-action hover controls, per-app "Proxied / Direct" switches, isolated global proxy settings, and local port scanning.
 - 🔄 **Smart State Sensing & Safe Restart**: Real-time detection of running state, direct conflicts, and proxy port drift; sends graceful close signals first to safeguard workspace data.
 - 🩺 **Four-Dimensional Diagnostics Engine**: Comprehensive diagnostics spanning upstream tunnel reachability, main CLI arguments, LSP child process env inheritance, and kernel-level TCP snapshots with one-click privacy redaction.
 - 🚀 **Desktop Shortcuts & Lightweight Tray**: Generate standalone desktop shortcuts with original icons, minimize to tray on close, and idle in the background with only ~20MB RAM usage.
