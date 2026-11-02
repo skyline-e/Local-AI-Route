@@ -60,7 +60,7 @@
 | **系统侵入与稳定性** | 客户端异常退出易导致全机断网 | 驱动崩溃或配置异常易致 Winsock 损坏或路由黑洞 | ✅ **绝对零侵入**，不改变任何系统配置与网络设置 |
 | **子进程 / LSP 继承** | ❌ **极差**（Node/LSP 扩展大多不读取系统代理） | ✅ 较好（由 L3 网络层统揽） | ✅ **深度穿透**（注入 `HTTP_PROXY` 与 `NODE_USE_ENV_PROXY`） |
 | **UDP 旁路与 QUIC 泄露** | 无法拦截 UDP 流量 | 依赖规则拦截 UDP | ✅ **强制注入 `--disable-quic`**，切断 UDP 绕过风险 |
-| **规则维护与心智负担** | 规则能力弱，仅支持简单 bypass 或 PAC | ❌ **心智负担极重**：必须手动编写或订阅第三方规则库（GeoSite/Process-Name），AI 平台域名与 CDN 频变，规则一旦滞后出现漏网走直连易遭封号，需频繁更新追踪 | ✅ **零规则维护（Zero Config Rules）**：直接在网络栈层面将目标进程流量 100% 物理绑定到本地代理，无需关心厂商新增了什么域名或 CDN |
+| **规则维护与心智负担** | 规则能力弱，仅支持简单 bypass 规则或 PAC 脚本 | ❌ **心智负担极重**：必须手动编写或订阅第三方规则库（如 `GeoSite`、`PROCESS-NAME`、`IP-CIDR`），AI 平台域名与 CDN 频变，规则一旦滞后出现漏网走直连易遭封号，需频繁更新追踪 | ✅ **零规则维护（Zero Config Rules）**：直接在网络栈层面将目标进程流量 100% 物理绑定到本地代理，无需关心厂商新增了什么域名或 CDN |
 | **分流失误风险** | 规则未命中则走直连 | ⚠️ **规则滞后风险**：AI 域名频变，漏网流量走直连易被封号 | ✅ **物理确定性**：目标应用所有网络请求强制绑定代理端口 |
 | **流量与状态透明度** | 黑盒，难以定位断流原因 | 黑盒，排查需 Wireshark 抓包 | ✅ **独家四维诊断**：内核 TCP 快照直接核验证据，支持脱敏导出 |
 | **日常应用影响** | 国内软件可能被劫持或异地风控 | 整机流量过核心，局域网/打印机易受干扰 | ✅ **仅目标 AI 应用走代理**，微信/钉钉/局域网完全不受影响 |
@@ -177,7 +177,7 @@ flowchart TD
 ### 方式一：从 Release 下载（开箱即用）
 
 从 [GitHub Releases](../../releases) 获取对应平台的发布包：
-- 🪟 **Windows**：下载解压免安装便携包 `Local-AI-Route-<version>-windows-x64-portable.zip` 或安装包 `Local-AI-Route_<version>_x64-setup.exe`。
+- 💻 **Windows**：下载解压免安装便携包 `Local-AI-Route-<version>-windows-x64-portable.zip` 或安装包 `Local-AI-Route_<version>_x64-setup.exe`。
 - 🍎 **macOS**：下载 `Local-AI-Route_<version>_universal.dmg`（通用二进制，原生支持 Apple Silicon M 系列与 Intel 芯片），打开后拖拽至 Applications 目录。
 - 🐧 **Linux**：下载 `.deb` 安装包（`sudo dpkg -i ...`）或 `.AppImage` 独立运行包（赋予执行权限 `chmod +x` 后直接运行）。
 

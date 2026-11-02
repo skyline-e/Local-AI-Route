@@ -70,6 +70,7 @@ pub fn save_settings(app: tauri::AppHandle, new_settings: AppSettings, state: St
     if let Some(gemini_target) = find_target_spec(&new_settings, "gemini") {
         sync_gemini_profile_proxy(&new_settings.proxy, gemini_target.proxy_enabled);
     }
+    crate::update_tray_menu(&app, &new_settings.language);
     let mut current = safe_lock(&state.settings);
     *current = new_settings;
     Ok(())

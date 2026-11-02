@@ -1,6 +1,18 @@
 import { ref } from "vue";
 
-export const currentLang = ref<"zh-CN" | "en-US">("zh-CN");
+export function detectSystemLanguage(): "zh-CN" | "en-US" {
+  try {
+    if (typeof navigator !== "undefined") {
+      const primary = (navigator.languages?.[0] || navigator.language || "").toLowerCase();
+      if (primary.startsWith("zh")) {
+        return "zh-CN";
+      }
+    }
+  } catch {}
+  return "en-US";
+}
+
+export const currentLang = ref<"zh-CN" | "en-US">(detectSystemLanguage());
 
 export const messages = {
   "zh-CN": {

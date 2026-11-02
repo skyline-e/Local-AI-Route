@@ -44,7 +44,10 @@ pub fn load_settings() -> AppSettings {
     let path = get_settings_file_path();
     if path.is_file() {
         if let Ok(data) = fs::read_to_string(&path) {
-            if let Ok(settings) = serde_json::from_str::<AppSettings>(&data) {
+            if let Ok(mut settings) = serde_json::from_str::<AppSettings>(&data) {
+                if settings.language.is_empty() {
+                    settings.language = crate::core::models::detect_default_language();
+                }
                 return settings;
             }
         }

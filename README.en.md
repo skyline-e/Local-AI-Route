@@ -177,7 +177,7 @@ When connection issues occur, conventional tools report vague "connection failed
 ### Option 1: Download from Releases (Ready-to-Use)
 
 Grab the appropriate package for your system from [GitHub Releases](../../releases):
-- 🪟 **Windows**: Download and extract the portable ZIP `Local-AI-Route-<version>-windows-x64-portable.zip` or install via `Local-AI-Route_<version>_x64-setup.exe`.
+- 💻 **Windows**: Download and extract the portable ZIP `Local-AI-Route-<version>-windows-x64-portable.zip` or install via `Local-AI-Route_<version>_x64-setup.exe`.
 - 🍎 **macOS**: Download `Local-AI-Route_<version>_universal.dmg` (Universal binary with native Apple Silicon M-series & Intel support) and drag to Applications.
 - 🐧 **Linux**: Download the `.deb` package (`sudo dpkg -i ...`) or standalone `.AppImage` (`chmod +x` and run directly).
 

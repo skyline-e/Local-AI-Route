@@ -8,7 +8,7 @@ import {
   TargetAppSpec,
   RunStatus,
 } from "./types";
-import { t, currentLang } from "./i18n";
+import { t, currentLang, detectSystemLanguage } from "./i18n";
 import {
   ShieldCheck,
   Zap,
@@ -174,6 +174,9 @@ async function loadInitialData() {
     settings.value = res;
     if (res.language === "en-US" || res.language === "zh-CN") {
       currentLang.value = res.language;
+    } else {
+      currentLang.value = detectSystemLanguage();
+      settings.value.language = currentLang.value;
     }
     applyTheme(res.theme || "system");
     await refreshTargets();

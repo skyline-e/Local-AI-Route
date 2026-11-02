@@ -123,10 +123,45 @@ pub struct AppSettings {
     pub custom_apps: Vec<TargetAppSpec>,
 }
 
+pub fn detect_default_language() -> String {
+    // 1. Check POSIX / standard environment variables first (LC_ALL, LC_MESSAGES, LANG)
+    let env_lang = std::env::var("LC_ALL")
+        .or_else(|_| std::env::var("LC_MESSAGES"))
+        .or_else(|_| std::env::var("LANG"))
+        .unwrap_or_default()
+        .to_lowercase();
+
+    if !env_lang.is_empty() {
+        if env_lang.starts_with("zh") {
+            return "zh-CN".into();
+        } else {
+            return "en-US".into();
+        }
+    }
+
+    // 2. On Windows, detect user default UI language via Win32 API
+    #[cfg(target_os = "windows")]
+    {
+        let lang_id = unsafe { windows::Win32::Globalization::GetUserDefaultUILanguage() };
+        // Primary language ID 0x04 is LANG_CHINESE (zh-CN 0x0804, zh-TW 0x0404, etc.)
+        if (lang_id & 0x03ff) == 0x04 {
+            return "zh-CN".into();
+        } else {
+            return "en-US".into();
+        }
+    }
+
+    // Fallback to en-US for international environments / AppImage catalog compliance
+    #[cfg(not(target_os = "windows"))]
+    {
+        "en-US".into()
+    }
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            language: "zh-CN".into(),
+            language: detect_default_language(),
             theme: "system".into(),
             autostart: false,
             proxy: ProxyConfig::default(),

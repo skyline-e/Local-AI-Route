@@ -16,6 +16,28 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, WindowEvent};
 
+pub const TRAY_ID: &str = "main-tray";
+
+pub fn build_tray_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>, is_en: bool) -> tauri::Result<Menu<R>> {
+    let show_text = if is_en { "Show Window" } else { "显示主窗口" };
+    let hide_text = if is_en { "Hide to Tray" } else { "隐藏到后台" };
+    let quit_text = if is_en { "Quit" } else { "彻底退出" };
+
+    let show_i = MenuItem::with_id(app, "show", show_text, true, None::<&str>)?;
+    let hide_i = MenuItem::with_id(app, "hide", hide_text, true, None::<&str>)?;
+    let quit_i = MenuItem::with_id(app, "quit", quit_text, true, None::<&str>)?;
+    Menu::with_items(app, &[&show_i, &hide_i, &quit_i])
+}
+
+pub fn update_tray_menu(app: &tauri::AppHandle, language: &str) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let is_en = language == "en-US";
+        if let Ok(menu) = build_tray_menu(app, is_en) {
+            let _ = tray.set_menu(Some(menu));
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let args: Vec<String> = std::env::args().collect();
@@ -45,11 +67,21 @@ pub fn run() {
                     }
                 }
             }
+            let is_en = initial_settings.language == "en-US";
+            let app_name = if is_en && !target.name_en.is_empty() {
+                &target.name_en
+            } else {
+                &target.name
+            };
+            let title = if is_en { "Local-AI-Route Launch Error" } else { "Local-AI-Route 启动失败" };
+
             if target.exe_path.is_empty() {
-                crate::platforms::show_native_message_box(
-                    "Local-AI-Route 启动失败",
-                    &format!("未检测到应用「{}」的可执行文件路径。\n\n请先打开 Local-AI-Route 主窗口完成路径配置。", target.name),
-                );
+                let msg = if is_en {
+                    format!("Executable path not detected for application \"{}\".\n\nPlease open the Local-AI-Route main window to configure the path.", app_name)
+                } else {
+                    format!("未检测到应用「{}」的可执行文件路径。\n\n请先打开 Local-AI-Route 主窗口完成路径配置。", target.name)
+                };
+                crate::platforms::show_native_message_box(title, &msg);
             } else {
                 if !target.warn_unsaved_on_kill {
                     let mut sys = System::new();
@@ -60,23 +92,31 @@ pub fn run() {
                     }
                 }
                 if let Err(e) = launch_target(&target, &initial_settings.proxy) {
-                    crate::platforms::show_native_message_box(
-                        "Local-AI-Route 启动失败",
-                        &format!("启动目标应用「{}」失败: {}\n\n请检查路径是否正确或文件是否被占用/拦截。", target.name, e),
-                    );
+                    let msg = if is_en {
+                        format!("Failed to launch target application \"{}\": {}\n\nPlease check if the path is valid or if the process is busy/blocked.", app_name, e)
+                    } else {
+                        format!("启动目标应用「{}」失败: {}\n\n请检查路径是否正确或文件是否被占用/拦截。", target.name, e)
+                    };
+                    crate::platforms::show_native_message_box(title, &msg);
                 }
             }
         } else {
-            crate::platforms::show_native_message_box(
-                "Local-AI-Route 启动失败",
-                &format!("未在配置中找到目标应用 ID: {}\n\n请打开 Local-AI-Route 主窗口检查应用列表。", target_id),
-            );
+            let is_en = initial_settings.language == "en-US";
+            let title = if is_en { "Local-AI-Route Launch Error" } else { "Local-AI-Route 启动失败" };
+            let msg = if is_en {
+                format!("Target application ID not found in configuration: {}\n\nPlease open the Local-AI-Route main window to verify the application list.", target_id)
+            } else {
+                format!("未在配置中找到目标应用 ID: {}\n\n请打开 Local-AI-Route 主窗口检查应用列表。", target_id)
+            };
+            crate::platforms::show_native_message_box(title, &msg);
         }
         return;
     }
 
     let mut initial_sys = System::new();
     refresh_processes_for_inspection(&mut initial_sys, false);
+
+    let is_en_locale = initial_settings.language == "en-US";
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -106,14 +146,11 @@ pub fn run() {
             commands::run_diagnostics,
             commands::create_shortcut
         ])
-        .setup(|app| {
+        .setup(move |app| {
             // Build Tray Menu
-            let show_i = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
-            let hide_i = MenuItem::with_id(app, "hide", "隐藏到后台", true, None::<&str>)?;
-            let quit_i = MenuItem::with_id(app, "quit", "彻底退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_i, &hide_i, &quit_i])?;
+            let menu = build_tray_menu(app.handle(), is_en_locale)?;
 
-            let _tray = TrayIconBuilder::new()
+            let _tray = TrayIconBuilder::with_id(TRAY_ID)
                 .menu(&menu)
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("Local-AI-Route")
