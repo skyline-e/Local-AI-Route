@@ -166,6 +166,10 @@ fn is_matching_exe_name(actual_name: &str, target_name: &str) -> bool {
                 | ("chatgpt-desktop", "chatgpt")
                 | ("gemini", "gemini-desktop")
                 | ("gemini-desktop", "gemini")
+                | ("factory", "factory-desktop")
+                | ("factory-desktop", "factory")
+                | ("factory", "droid")
+                | ("droid", "factory")
         )
 }
 

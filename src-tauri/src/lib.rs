@@ -152,7 +152,8 @@ pub fn run() {
             commands::switch_account,
             commands::delete_account,
             commands::refresh_quota,
-            commands::prepare_new_claude_login
+            commands::prepare_new_claude_login,
+            commands::prepare_new_factory_login
         ])
         .setup(move |app| {
             // Build Tray Menu

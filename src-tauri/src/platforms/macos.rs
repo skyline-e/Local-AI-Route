@@ -56,6 +56,7 @@ pub fn discover_target_executable(app_id: &str) -> Option<String> {
         "gemini" => &["Gemini.app", "Google Gemini.app"],
         "antigravity-app" => &["Antigravity.app"],
         "antigravity-ide" => &["Antigravity IDE.app", "AntigravityIDE.app"],
+        "factory" => &["Factory.app", "Factory Desktop.app", "Droid.app"],
         _ => return None,
     };
 

@@ -165,6 +165,19 @@ pub mod cred_mgr {
 
         Ok(())
     }
+
+    pub fn delete_credential(target: &str) -> Result<(), String> {
+        let target_wide: Vec<u16> = std::ffi::OsStr::new(target)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let res = unsafe { CredDeleteW(target_wide.as_ptr(), 1, 0) };
+        if res == 0 {
+            return Err(format!("CredDeleteW failed for '{}': {}", target, std::io::Error::last_os_error()));
+        }
+        Ok(())
+    }
 }
 
 pub fn decrypt_chromium_v10(key: &[u8], ciphertext_blob: &[u8]) -> Result<Vec<u8>, String> {

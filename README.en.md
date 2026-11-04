@@ -22,6 +22,7 @@
 - ✨ **Gemini Desktop** (compatible with Windows Squirrel, macOS App Bundles, and Linux desktop clients)
 - 🌌 **Antigravity Desktop**
 - ⚡ **Antigravity IDE** (strict app disambiguation & dedicated LSP proxy inheritance checks)
+- 🏭 **Factory Desktop / Factory Droid** (compatible with Windows installer/Squirrel/CLI `droid`, macOS App Bundles, and Linux desktop/binary)
 - 🧩 **Custom Extensible**: One-click addition of any Chromium / Electron-based desktop AI app (e.g. Cursor, Windsurf)
 
 > [!NOTE]
@@ -37,11 +38,11 @@
 ## Key Features
 
 - 🎯 **Zero-Global-TUN / No System Proxy Tampering**: Pure process-level network isolation. Routes only designated AI apps through the proxy, leaving internal VPNs, LAN resources, and regular software untouched.
-- 🤖 **Deep Native Adaptation**: Out-of-the-box support for ChatGPT, Claude, Gemini Desktop, Antigravity Desktop, and Antigravity IDE, with one-click custom addition for any Chromium / Electron apps (e.g. Cursor, Windsurf).
+- 🤖 **Deep Native Adaptation**: Out-of-the-box support for ChatGPT, Claude, Gemini Desktop, Antigravity Desktop, Antigravity IDE, and Factory Desktop, with one-click custom addition for any Chromium / Electron apps (e.g. Cursor, Windsurf).
 - 🎛️ **Concurrent Management & Independent Toggling**: Master-Detail split layout completely eliminates vertical page scrolling, featuring quick-action hover controls, per-app "Proxied / Direct" switches, isolated global proxy settings, and local port scanning.
 - 🔄 **Smart State Sensing & Safe Restart**: Real-time detection of running state, direct conflicts, and proxy port drift; sends graceful close signals first to safeguard workspace data.
 - 🩺 **Four-Dimensional Diagnostics Engine**: Comprehensive diagnostics spanning upstream tunnel reachability, main CLI arguments, LSP child process env inheritance, and kernel-level TCP snapshots with one-click privacy redaction.
-- 👥 **Multi-Account Switching & Live Quota Monitoring**: Native support for Antigravity, ChatGPT, and Claude Desktop, featuring atomic credential switching, safe process relaunch, DPAPI credential decryption, and real-time 5-hour/weekly quota usage and reset countdowns.
+- 👥 **Multi-Account Switching & Live Quota Monitoring**: Native support for Antigravity, ChatGPT, Claude Desktop, and Factory Desktop / Droid, featuring atomic credential switching, safe process relaunch, AES-256-GCM / DPAPI credential decryption, session token expiration, and real-time 5-hour/7-day/30-day quota windows with reset countdowns.
 - 🚀 **Desktop Shortcuts & Lightweight Tray**: Generate standalone desktop shortcuts with original icons, minimize to tray on close, and idle in the background with only ~20MB RAM usage.
 - 📦 **Portable & Modern Bilingual UI**: Auto-detects portable `data/` directory and standard installation modes, with instant English / Simplified Chinese switching and Dark / Light theme support.
 
@@ -186,6 +187,11 @@ To cater to heavy AI developers juggling multiple subscriptions and avoiding rat
   - **DPAPI + AES-256-GCM Decryption**: Claude Desktop stores OAuth tokens in Chromium's encrypted v10 format in `%APPDATA%\Claude\config.json` (`oauth:tokenCacheV2`). The engine extracts the master key from `Local State` using Windows DPAPI (`CryptUnprotectData`), then decrypts the ciphertext via AES-256-GCM.
   - **Anthropic OAuth Quota & Reset Timers**: Connects to `api.anthropic.com/api/oauth/usage` (with header `anthropic-beta: oauth-2025-04-20`) to display the live 5-hour rate limit utilization and second-precise countdown timers.
   - **Session Persistence & Clean Login Reset**: Completely backs up and restores the `Network/Cookies` database alongside profile switches, and provides a "Prepare Clean Login" action to archive the current session and facilitate adding new accounts.
+- **Factory Desktop / Droid AES-256-GCM Credential Management & Rolling Quota Monitoring**:
+  - **Atomic Safe Switching**: Swaps `~/.factory` credentials (`auth.v2.file`, `auth.v2.key`, `auth.encrypted`) securely with AES-256-GCM encryption/decryption, while keeping the Windows Credential Manager (`Factory CLI/auth-encryption-key`) in sync.
+  - **Offline JWT Identity & Expiration**: Decodes the WorkOS/Factory OAuth access token locally without network roundtrips to extract the user's email, subject ID, plan tier (Pro / Plus / Max / Team / Enterprise), and exact session token expiration countdown.
+  - **Three-Tier Rolling Rate Limit Windows**: Built-in awareness of Factory's 5-hour rolling rate limits, 7-day limits (with automatic fallback to the free Droid Core open-weight model pool), and 30-day billing periods, with live querying support via the Factory Analytics API.
+  - **Clean Session Reset**: Provides a "Reset Factory Session" feature to cleanly reset the active client for new account logins, followed by one-click importing.
 - **Switching Lifecycle Protection**:
   Before switching profiles, the engine verifies if the target app is running, initiates a graceful exit, atomically updates credentials and cookie stores, and relaunches the application with proxy flags intact.
 

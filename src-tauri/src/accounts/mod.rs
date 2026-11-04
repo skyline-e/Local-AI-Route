@@ -2,6 +2,7 @@ pub mod antigravity;
 pub mod chatgpt;
 pub mod claude;
 pub mod crypto;
+pub mod factory;
 pub mod models;
 pub mod storage;
 
@@ -15,6 +16,7 @@ pub fn normalize_provider(app_id: &str) -> Option<&'static str> {
         "antigravity-app" | "antigravity-ide" | "antigravity" => Some("antigravity"),
         "chatgpt" => Some("chatgpt"),
         "claude" => Some("claude"),
+        "factory" | "factory-app" | "factory-desktop" | "droid" => Some("factory"),
         _ => None,
     }
 }
@@ -260,6 +262,61 @@ pub async fn import_current_account(
             storage::save_accounts(provider, &existing)?;
             Ok(profile)
         }
+        "factory" => {
+            let bundle = factory::read_live_auth_bundle()?;
+            let identity = factory::parse_identity(&bundle.decrypted_json);
+            let display_name = custom_name.unwrap_or_else(|| {
+                if let Some(ref em) = identity.email {
+                    em.split('@').next().unwrap_or("Factory Account").to_string()
+                } else {
+                    "Factory Account".into()
+                }
+            });
+
+            if let Some(ref em) = identity.email {
+                if let Some(pos) = existing.iter().position(|a| a.email.as_deref() == Some(em)) {
+                    let existing_id = existing[pos].id.clone();
+                    factory::save_bundle_to_storage(provider, &existing_id, &bundle)?;
+                    for a in &mut existing {
+                        a.is_active = a.id == existing_id;
+                    }
+                    existing[pos].last_used_at = Some(now_str.clone());
+                    let quota = factory::query_quota(&bundle, &existing_id, proxy).await.ok();
+                    if let Some(ref q) = quota {
+                        existing[pos].quota = Some(q.clone());
+                        if q.plan_type.is_some() {
+                            existing[pos].plan_type = q.plan_type.clone();
+                        }
+                    }
+                    let _ = storage::save_accounts(provider, &existing);
+                    return Ok(existing[pos].clone());
+                }
+            }
+
+            factory::save_bundle_to_storage(provider, &account_id, &bundle)?;
+            let quota = factory::query_quota(&bundle, &account_id, proxy).await.ok();
+
+            for a in &mut existing {
+                a.is_active = false;
+            }
+
+            let profile = AccountProfile {
+                id: account_id.clone(),
+                provider: provider.into(),
+                name: display_name,
+                email: identity.email.clone(),
+                account_id: identity.subject.clone().or_else(|| identity.email.clone()),
+                plan_type: identity.plan_type.clone().or_else(|| quota.as_ref().and_then(|q| q.plan_type.clone())),
+                created_at: now_str.clone(),
+                last_used_at: Some(now_str),
+                is_active: true,
+                quota,
+            };
+
+            existing.push(profile.clone());
+            storage::save_accounts(provider, &existing)?;
+            Ok(profile)
+        }
         _ => Err("Unsupported provider".into()),
     }
 }
@@ -407,6 +464,30 @@ pub async fn add_account_manual(
             storage::save_accounts(provider, &existing)?;
             Ok(profile)
         }
+        "factory" => {
+            let bundle = factory::create_bundle_from_raw(raw_trimmed)?;
+            let identity = factory::parse_identity(&bundle.decrypted_json);
+
+            factory::save_bundle_to_storage(provider, &account_id, &bundle)?;
+            let quota = factory::query_quota(&bundle, &account_id, proxy).await.ok();
+
+            let profile = AccountProfile {
+                id: account_id.clone(),
+                provider: provider.into(),
+                name,
+                email: identity.email.clone(),
+                account_id: identity.subject.clone().or_else(|| identity.email.clone()),
+                plan_type: identity.plan_type.clone().or_else(|| quota.as_ref().and_then(|q| q.plan_type.clone())),
+                created_at: now_str.clone(),
+                last_used_at: if is_first { Some(now_str) } else { None },
+                is_active: is_first,
+                quota,
+            };
+
+            existing.push(profile.clone());
+            storage::save_accounts(provider, &existing)?;
+            Ok(profile)
+        }
         _ => Err("Unsupported provider".into()),
     }
 }
@@ -541,6 +622,17 @@ pub async fn switch_account(
                 }
             }
         }
+        "factory" => {
+            // Save active files of previously active account if one exists
+            if let Some(active_account) = accounts.iter().find(|a| a.is_active && a.id != account_id) {
+                if let Ok(live_bundle) = factory::read_live_auth_bundle() {
+                    let _ = factory::save_bundle_to_storage(provider, &active_account.id, &live_bundle);
+                }
+            }
+
+            // Restore target account files to ~/.factory
+            factory::restore_bundle_to_live(provider, account_id)?;
+        }
         _ => return Err("Unsupported provider".into()),
     }
 
@@ -557,7 +649,7 @@ pub async fn switch_account(
     if had_running_processes {
         if let (Some(target), Some(p)) = (target_spec, proxy) {
             tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-            if let Ok(_) = launch_target(target, p) {
+            if launch_target(target, p).is_ok() {
                 restarted = true;
             }
         }
@@ -628,6 +720,17 @@ pub async fn refresh_quota(
             let auth_cfg = String::from_utf8(data).map_err(|e| e.to_string())?;
             claude::query_quota(&claude_dir, &auth_cfg, &target_id, proxy).await?
         }
+        "factory" => {
+            // If the target account is currently active, sync live files from ~/.factory back to storage
+            // to capture any refreshed access tokens updated in the background by Factory desktop app
+            if accounts[idx].is_active {
+                if let Ok(live_bundle) = factory::read_live_auth_bundle() {
+                    let _ = factory::save_bundle_to_storage(provider, &target_id, &live_bundle);
+                }
+            }
+            let bundle = factory::load_bundle_from_storage(provider, &target_id)?;
+            factory::query_quota(&bundle, &target_id, proxy).await?
+        }
         _ => return Err("Unsupported provider".into()),
     };
 
@@ -680,6 +783,10 @@ mod tests {
         assert_eq!(normalize_provider("antigravity-ide"), Some("antigravity"));
         assert_eq!(normalize_provider("chatgpt"), Some("chatgpt"));
         assert_eq!(normalize_provider("claude"), Some("claude"));
+        assert_eq!(normalize_provider("factory"), Some("factory"));
+        assert_eq!(normalize_provider("factory-app"), Some("factory"));
+        assert_eq!(normalize_provider("factory-desktop"), Some("factory"));
+        assert_eq!(normalize_provider("droid"), Some("factory"));
         assert_eq!(normalize_provider("unknown_app"), None);
     }
 }

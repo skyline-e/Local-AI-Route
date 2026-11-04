@@ -239,6 +239,75 @@ pub fn discover_target_executable(app_id: &str) -> Option<String> {
                 }
             }
         }
+        "factory" => {
+            // 1. Check %LOCALAPPDATA%\Programs\Factory\Factory.exe and variants
+            if !local_app_data.is_empty() {
+                for sub in &[
+                    r"Programs\Factory\Factory.exe",
+                    r"Factory\Factory.exe",
+                    r"Programs\Factory Desktop\Factory.exe",
+                    r"Programs\FactoryAI\Factory.exe",
+                ] {
+                    let candidate = Path::new(&local_app_data).join(sub);
+                    if candidate.is_file() {
+                        return Some(candidate.to_string_lossy().to_string());
+                    }
+                }
+                let factory_root = Path::new(&local_app_data).join("Factory");
+                if let Some(found) = find_latest_squirrel_exe(&factory_root, "Factory.exe") {
+                    return Some(found);
+                }
+            }
+
+            // 2. Check ProgramFiles / ProgramFiles(x86)
+            for base in &[&prog_files, &prog_files_x86] {
+                if base.is_empty() {
+                    continue;
+                }
+                for sub in &[
+                    r"Factory\Factory.exe",
+                    r"Factory Desktop\Factory.exe",
+                    r"Programs\Factory\Factory.exe",
+                ] {
+                    let candidate = Path::new(base).join(sub);
+                    if candidate.is_file() {
+                        return Some(candidate.to_string_lossy().to_string());
+                    }
+                }
+            }
+
+            // 3. Check Uninstall registry
+            if let Some(path) = search_uninstall_registry("factory", false, "Factory.exe") {
+                return Some(path);
+            }
+
+            // 4. Check user bin directory for droid.exe
+            if let Some(user_home) = dirs::home_dir() {
+                for sub in &[
+                    r"bin\droid.exe",
+                    r".local\bin\droid.exe",
+                    r".factory\bin\droid.exe",
+                    r"AppData\Local\dsw\bin\dsw.exe",
+                ] {
+                    let candidate = user_home.join(sub);
+                    if candidate.is_file() {
+                        return Some(candidate.to_string_lossy().to_string());
+                    }
+                }
+            }
+
+            // 5. Check PATH for Factory.exe or droid.exe
+            if let Ok(path_var) = std::env::var("PATH") {
+                for dir in std::env::split_paths(&path_var) {
+                    for bin_name in &["Factory.exe", "droid.exe"] {
+                        let candidate = dir.join(bin_name);
+                        if candidate.is_file() {
+                            return Some(candidate.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+        }
         _ => {}
     }
     None

@@ -85,6 +85,25 @@ pub fn builtin_presets() -> Vec<TargetAppSpec> {
             sidecar_cmdline_regex: r#"--subclient_type(?:=|\s+)"?ide(?:"|\s|$)"#.into(),
             warn_unsaved_on_kill: true,
         },
+        TargetAppSpec {
+            id: "factory".into(),
+            name: "Factory (桌面版)".into(),
+            name_en: "Factory Desktop".into(),
+            builtin: true,
+            exe_path: String::new(),
+            proxy_enabled: true,
+            probe_urls: vec![
+                "https://factory.ai/".into(),
+                "https://api.factory.ai/".into(),
+                "https://app.factory.ai/".into(),
+            ],
+            child_process_patterns: vec![
+                "droid.exe".into(),
+                "droid".into(),
+            ],
+            sidecar_cmdline_regex: String::new(),
+            warn_unsaved_on_kill: false,
+        },
     ]
 }
 

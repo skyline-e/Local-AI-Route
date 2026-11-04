@@ -290,3 +290,8 @@ pub fn prepare_new_claude_login() -> Result<String, String> {
     crate::accounts::prepare_new_claude_login()
 }
 
+#[tauri::command]
+pub fn prepare_new_factory_login() -> Result<String, String> {
+    crate::accounts::factory::prepare_new_factory_login()
+}
+

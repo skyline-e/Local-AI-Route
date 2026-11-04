@@ -86,7 +86,7 @@ function selectNav(id: string) {
   try {
     localStorage.setItem("local_ai_route_last_tab", id);
   } catch {}
-  if (["chatgpt", "claude", "antigravity-app", "antigravity-ide"].includes(id)) {
+  if (["chatgpt", "claude", "antigravity-app", "antigravity-ide", "factory"].includes(id)) {
     loadAccountsForCurrent();
   }
 }
@@ -473,7 +473,7 @@ const isSwitchingAccount = ref(false);
 const isRefreshingQuota = ref(false);
 
 const isSupportsAccounts = computed(() => {
-  return ["chatgpt", "claude", "antigravity-app", "antigravity-ide"].includes(currentTarget.value?.id || "");
+  return ["chatgpt", "claude", "antigravity-app", "antigravity-ide", "factory"].includes(currentTarget.value?.id || "");
 });
 
 const activeAccount = computed(() => {
@@ -633,23 +633,37 @@ async function handlePrepareClaudeLogin() {
   }
 }
 
+async function handlePrepareFactoryLogin() {
+  try {
+    const msg = await invoke<string>("prepare_new_factory_login");
+    showToast(msg, "info", 5000);
+  } catch (err) {
+    showToast(`重置会话失败: ${err}`, "error");
+  }
+}
+
 function formatCountdown(sec?: number): string {
   if (sec === undefined || sec === null || sec <= 0) return "--";
-  const hours = Math.floor(sec / 3600);
+  const days = Math.floor(sec / 86400);
+  const hours = Math.floor((sec % 86400) / 3600);
   const minutes = Math.floor((sec % 3600) / 60);
+  const seconds = Math.floor(sec % 60);
+  if (days > 0) {
+    return `${days}d ${hours}h`;
+  }
   if (hours > 0) {
     return `${hours}h ${minutes}m`;
   }
   if (minutes > 0) {
     return `${minutes}m`;
   }
-  return "< 1m";
+  return `${seconds}s`;
 }
 
 watch(
   () => activeNavId.value,
   (newId) => {
-    if (["chatgpt", "claude", "antigravity-app", "antigravity-ide"].includes(newId)) {
+    if (["chatgpt", "claude", "antigravity-app", "antigravity-ide", "factory"].includes(newId)) {
       loadAccountsForCurrent();
     }
   }
@@ -657,7 +671,7 @@ watch(
 
 onMounted(async () => {
   await loadInitialData();
-  if (["chatgpt", "claude", "antigravity-app", "antigravity-ide"].includes(activeNavId.value)) {
+  if (["chatgpt", "claude", "antigravity-app", "antigravity-ide", "factory"].includes(activeNavId.value)) {
     await loadAccountsForCurrent();
   }
 
@@ -701,7 +715,7 @@ onUnmounted(() => {
         <div>
           <h1 class="text-base font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
             {{ t("app_title") }}
-            <span class="text-[10px] px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300 font-mono">v0.2.3</span>
+            <span class="text-[10px] px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300 font-mono">v0.2.5</span>
           </h1>
           <p class="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">{{ t("app_subtitle") }}</p>
         </div>
@@ -1204,6 +1218,17 @@ onUnmounted(() => {
                   <Key class="w-3 h-3 text-amber-500" />
                   <span>{{ t("claude_reset_session_btn") }}</span>
                 </button>
+
+                <!-- Reset Factory Session (Factory only) -->
+                <button
+                  v-if="currentTarget.id === 'factory'"
+                  @click="handlePrepareFactoryLogin()"
+                  class="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-indigo-300 dark:border-indigo-800/60 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 flex items-center gap-1 transition cursor-pointer"
+                  :title="t('factory_reset_session_tip')"
+                >
+                  <Key class="w-3 h-3 text-indigo-500" />
+                  <span>{{ t("factory_reset_session_btn") }}</span>
+                </button>
               </div>
             </div>
 
@@ -1274,7 +1299,7 @@ onUnmounted(() => {
 
                   <!-- Reset Information -->
                   <div class="flex items-center justify-between text-[10px] text-slate-400 pt-1 border-t border-slate-100 dark:border-slate-700/50">
-                    <div class="flex items-center gap-1 text-slate-500 dark:text-slate-400">
+                    <div class="flex items-center gap-1 text-slate-500 dark:text-slate-400" :title="w.resets_at ? `重置/到期时间: ${w.resets_at}` : undefined">
                       <Clock class="w-3 h-3 text-slate-400 shrink-0" />
                       <span v-if="w.reset_in_seconds && w.reset_in_seconds > 0" class="font-mono text-sky-600 dark:text-sky-400 font-semibold">
                         {{ formatCountdown(w.reset_in_seconds) }}
@@ -1282,10 +1307,15 @@ onUnmounted(() => {
                       <span v-else>--</span>
                     </div>
 
-                    <span v-if="w.resets_at" class="font-mono truncate" :title="w.resets_at">
-                      {{ w.resets_at.split(' ')[1] || w.resets_at }}
+                    <span v-if="w.resets_at" class="font-mono truncate max-w-[120px]" :title="`到期/重置时间: ${w.resets_at}`">
+                      {{ w.resets_at }}
                     </span>
                   </div>
+
+                  <!-- Detail Description -->
+                  <p v-if="w.detail" class="text-[10px] text-slate-400 dark:text-slate-400 leading-snug line-clamp-2" :title="w.detail">
+                    {{ w.detail }}
+                  </p>
                 </div>
               </div>
             </div>
