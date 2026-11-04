@@ -47,6 +47,7 @@ import {
   ArrowRightLeft,
   Key,
   PlusCircle,
+  Calendar,
 } from "lucide-vue-next";
 
 const settings = ref<AppSettings>({
@@ -1241,7 +1242,7 @@ onUnmounted(() => {
                     {{ activeAccount.name.slice(0, 2).toUpperCase() }}
                   </div>
                   <div>
-                    <div class="flex items-center gap-2">
+                    <div class="flex items-center gap-2 flex-wrap">
                       <span class="text-xs font-bold text-slate-800 dark:text-slate-100">{{ activeAccount.name }}</span>
                       <span class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700/80">
                         {{ t("active_account_badge") }}
@@ -1249,6 +1250,46 @@ onUnmounted(() => {
                       <span v-if="activeAccount.plan_type" class="text-[10px] font-semibold px-2 py-0.5 rounded bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
                         {{ activeAccount.plan_type }}
                       </span>
+
+                      <!-- Factory Session Token Expiry Badge -->
+                      <template v-if="activeAccount.quota?.extra_info?.['token_expires_at']">
+                        <span
+                          v-if="activeAccount.quota.extra_info['token_is_expired'] === 'true'"
+                          class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-800/80 flex items-center gap-1"
+                          :title="`令牌到期时间: ${activeAccount.quota.extra_info['token_expires_at']}`"
+                        >
+                          <AlertCircle class="w-3 h-3 text-rose-500 shrink-0" />
+                          <span>{{ t("token_status_expired") }}</span>
+                        </span>
+                        <span
+                          v-else
+                          class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-300 dark:border-slate-700 flex items-center gap-1"
+                          :title="`令牌到期时间: ${activeAccount.quota.extra_info['token_expires_at']}`"
+                        >
+                          <Key class="w-3 h-3 text-slate-400 shrink-0" />
+                          <span>{{ t("token_status_valid") }}: {{ activeAccount.quota.extra_info['token_status'] }}</span>
+                        </span>
+                      </template>
+
+                      <!-- ChatGPT Subscription Expiry Badge -->
+                      <template v-if="activeAccount.quota?.extra_info?.['subscription_expires_at']">
+                        <span
+                          v-if="activeAccount.quota.extra_info['subscription_is_expired'] === 'true'"
+                          class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-800/80 flex items-center gap-1"
+                          :title="`订阅到期时间: ${activeAccount.quota.extra_info['subscription_expires_at']}`"
+                        >
+                          <AlertCircle class="w-3 h-3 text-rose-500 shrink-0" />
+                          <span>{{ t("subscription_expired") }}: {{ activeAccount.quota.extra_info['subscription_expires_at'].slice(0, 10) }}</span>
+                        </span>
+                        <span
+                          v-else
+                          class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/60 flex items-center gap-1"
+                          :title="`订阅到期时间: ${activeAccount.quota.extra_info['subscription_expires_at']}`"
+                        >
+                          <Calendar class="w-3 h-3 text-indigo-500 shrink-0" />
+                          <span>{{ t("subscription_valid_until") }}: {{ activeAccount.quota.extra_info['subscription_expires_at'].slice(0, 10) }}</span>
+                        </span>
+                      </template>
                     </div>
                     <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 font-mono">
                       {{ activeAccount.email || activeAccount.account_id || "本地凭证" }}
@@ -1374,6 +1415,9 @@ onUnmounted(() => {
                         </span>
                         <span v-if="acct.plan_type" class="text-[9px] px-1.5 py-0.2 rounded bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800 font-mono">
                           {{ acct.plan_type }}
+                        </span>
+                        <span v-if="acct.quota?.extra_info?.['token_is_expired'] === 'true' || acct.quota?.extra_info?.['subscription_is_expired'] === 'true'" class="text-[9px] font-medium px-1.5 py-0.2 rounded bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-800">
+                          {{ t("badge_expired") }}
                         </span>
                       </div>
                       <p class="text-[11px] text-slate-400 font-mono truncate">

@@ -123,6 +123,11 @@ export const messages = {
     account_plan: "套餐方案",
     saved_accounts_list: "已保存账号列表",
     unbound_email: "未绑定邮箱",
+    token_status_expired: "会话令牌已过期 (需重新登录)",
+    token_status_valid: "令牌",
+    subscription_valid_until: "订阅有效至",
+    subscription_expired: "订阅已到期",
+    badge_expired: "已过期",
   },
   "en-US": {
     app_title: "Local-AI-Route",
@@ -232,6 +237,11 @@ export const messages = {
     account_plan: "Plan Tier",
     saved_accounts_list: "Saved Accounts",
     unbound_email: "No email bound",
+    token_status_expired: "Session Token Expired (Login required)",
+    token_status_valid: "Token",
+    subscription_valid_until: "Subscription until",
+    subscription_expired: "Subscription expired",
+    badge_expired: "Expired",
   },
 };
 

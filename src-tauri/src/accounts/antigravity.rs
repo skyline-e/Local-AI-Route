@@ -283,41 +283,205 @@ pub async fn query_quota(
             if res.status().is_success() {
                 if let Ok(quota_data) = res.json::<QuotaResponse>().await {
                     if let Some(models) = quota_data.models {
-                        // Sort models by key
+                        // Struct for internal model quota calculation
+                        struct ModelLimitEntry {
+                            remaining_fraction: f64,
+                            resets_at: Option<String>,
+                            reset_in_seconds: Option<i64>,
+                        }
+
+                        let mut gemini_5h: Option<ModelLimitEntry> = None;
+                        let mut gemini_weekly: Option<ModelLimitEntry> = None;
+                        let mut claude_5h: Option<ModelLimitEntry> = None;
+                        let mut claude_weekly: Option<ModelLimitEntry> = None;
+                        let mut other_windows: Vec<QuotaWindow> = Vec::new();
+
+                        let mut has_gemini = false;
+                        let mut has_claude_gpt = false;
+
                         let mut sorted_keys: Vec<_> = models.keys().cloned().collect();
                         sorted_keys.sort();
 
                         for key in sorted_keys {
+                            let key_lower = key.to_lowercase();
+                            // Exclude internal tab/chat background models
+                            if key_lower.starts_with("chat_") || key_lower.starts_with("tab_") {
+                                continue;
+                            }
+
                             let info = &models[&key];
                             let display = info.display_name.clone().unwrap_or_else(|| key.clone());
 
-                            if let Some(q) = &info.quota_info {
-                                let remaining = q.remaining_fraction.unwrap_or(1.0);
-                                let remaining_pct = (remaining * 100.0).clamp(0.0, 100.0);
-                                let used_pct = (100.0 - remaining_pct).clamp(0.0, 100.0);
-
-                                let mut reset_sec = None;
-                                let mut formatted_resets = None;
+                            let (rem_frac, formatted_resets, reset_sec) = if let Some(q) = &info.quota_info {
+                                let rem = q.remaining_fraction.unwrap_or(1.0);
+                                let mut sec = None;
+                                let mut formatted = None;
                                 if let Some(ref rt) = q.reset_time {
                                     if let Ok(dt) = DateTime::parse_from_rfc3339(rt) {
                                         let diff = dt.with_timezone(&Utc) - Utc::now();
-                                        let sec = diff.num_seconds().max(0);
-                                        reset_sec = Some(sec);
+                                        let s = diff.num_seconds().max(0);
+                                        sec = Some(s);
                                         let local_time = dt.with_timezone(&chrono::Local);
-                                        formatted_resets = Some(local_time.format("%Y-%m-%d %H:%M:%S").to_string());
+                                        formatted = Some(local_time.format("%Y-%m-%d %H:%M:%S").to_string());
                                     }
                                 }
+                                (rem, formatted, sec)
+                            } else {
+                                (1.0, None, None)
+                            };
 
-                                windows.push(QuotaWindow {
-                                    name: display,
+                            let is_argon = key_lower.contains("argon") || display.to_lowercase().contains("argon");
+
+                            if !is_argon && key_lower.contains("gemini") {
+                                has_gemini = true;
+                                if let Some(sec) = reset_sec {
+                                    if sec <= 86400 {
+                                        // 5-hour rolling limit window
+                                        if gemini_5h.as_ref().is_none_or(|e| rem_frac < e.remaining_fraction) {
+                                            gemini_5h = Some(ModelLimitEntry {
+                                                remaining_fraction: rem_frac,
+                                                resets_at: formatted_resets,
+                                                reset_in_seconds: Some(sec),
+                                            });
+                                        }
+                                    } else {
+                                        // Weekly limit window
+                                        if gemini_weekly.as_ref().is_none_or(|e| rem_frac < e.remaining_fraction) {
+                                            gemini_weekly = Some(ModelLimitEntry {
+                                                remaining_fraction: rem_frac,
+                                                resets_at: formatted_resets,
+                                                reset_in_seconds: Some(sec),
+                                            });
+                                        }
+                                    }
+                                } else if gemini_5h.as_ref().is_none_or(|e| rem_frac < e.remaining_fraction) {
+                                    gemini_5h = Some(ModelLimitEntry {
+                                        remaining_fraction: rem_frac,
+                                        resets_at: None,
+                                        reset_in_seconds: None,
+                                    });
+                                }
+                            } else if !is_argon && (key_lower.contains("claude") || key_lower.contains("gpt")) {
+                                has_claude_gpt = true;
+                                if let Some(sec) = reset_sec {
+                                    if sec <= 86400 {
+                                        // 5-hour rolling limit window
+                                        if claude_5h.as_ref().is_none_or(|e| rem_frac < e.remaining_fraction) {
+                                            claude_5h = Some(ModelLimitEntry {
+                                                remaining_fraction: rem_frac,
+                                                resets_at: formatted_resets,
+                                                reset_in_seconds: Some(sec),
+                                            });
+                                        }
+                                    } else {
+                                        // Weekly limit window
+                                        if claude_weekly.as_ref().is_none_or(|e| rem_frac < e.remaining_fraction) {
+                                            claude_weekly = Some(ModelLimitEntry {
+                                                remaining_fraction: rem_frac,
+                                                resets_at: formatted_resets,
+                                                reset_in_seconds: Some(sec),
+                                            });
+                                        }
+                                    }
+                                } else if claude_weekly.as_ref().is_none_or(|e| rem_frac < e.remaining_fraction) {
+                                    claude_weekly = Some(ModelLimitEntry {
+                                        remaining_fraction: rem_frac,
+                                        resets_at: None,
+                                        reset_in_seconds: None,
+                                    });
+                                }
+                            } else {
+                                // Specific model (such as Gemini 4 Argon or custom model)
+                                let rem_pct = (rem_frac * 100.0).clamp(0.0, 100.0);
+                                let used_pct = (100.0 - rem_pct).clamp(0.0, 100.0);
+                                let win_type_suffix = if reset_sec.is_some_and(|s| s > 86400) {
+                                    "周用量限制 (Weekly limit)"
+                                } else {
+                                    "5小时速率 (5h limit)"
+                                };
+                                other_windows.push(QuotaWindow {
+                                    name: format!("{} · {}", display, win_type_suffix),
                                     used_percent: Some((used_pct * 10.0).round() / 10.0),
-                                    remaining_percent: Some((remaining_pct * 10.0).round() / 10.0),
+                                    remaining_percent: Some((rem_pct * 10.0).round() / 10.0),
                                     resets_at: formatted_resets,
                                     reset_in_seconds: reset_sec,
                                     detail: Some(format!("Model ID: {}", key)),
                                 });
                             }
                         }
+
+                        // Generate official Gemini Models quota pool windows (Image 3 layout)
+                        if has_gemini {
+                            // 1. Gemini Weekly limit
+                            let (rem_pct, used_pct, resets_at, reset_sec, detail) = if let Some(w) = gemini_weekly {
+                                let rem = (w.remaining_fraction * 100.0).clamp(0.0, 100.0);
+                                (Some((rem * 10.0).round() / 10.0), Some(((100.0 - rem) * 10.0).round() / 10.0), w.resets_at, w.reset_in_seconds, "Gemini 深度思考与主力模型周总用量池")
+                            } else {
+                                (Some(100.0), Some(0.0), None, None, "Gemini 深度思考与主力模型周总用量池 (额度充足)")
+                            };
+                            windows.push(QuotaWindow {
+                                name: "Gemini Models · 周用量限制 (Weekly limit)".into(),
+                                used_percent: used_pct,
+                                remaining_percent: rem_pct,
+                                resets_at,
+                                reset_in_seconds: reset_sec,
+                                detail: Some(detail.into()),
+                            });
+
+                            // 2. Gemini 5h limit
+                            let (rem_pct, used_pct, resets_at, reset_sec, detail) = if let Some(w) = gemini_5h {
+                                let rem = (w.remaining_fraction * 100.0).clamp(0.0, 100.0);
+                                (Some((rem * 10.0).round() / 10.0), Some(((100.0 - rem) * 10.0).round() / 10.0), w.resets_at, w.reset_in_seconds, "适用于 Gemini 2.5 Pro / Flash Lite / Flash 等全部 Gemini 模型")
+                            } else {
+                                (Some(100.0), Some(0.0), None, None, "适用于 Gemini 2.5 Pro / Flash 等全部 Gemini 模型 (速率充足)")
+                            };
+                            windows.push(QuotaWindow {
+                                name: "Gemini Models · 5小时速率 (5h limit)".into(),
+                                used_percent: used_pct,
+                                remaining_percent: rem_pct,
+                                resets_at,
+                                reset_in_seconds: reset_sec,
+                                detail: Some(detail.into()),
+                            });
+                        }
+
+                        // Generate official Claude & GPT models quota pool windows (Image 3 layout)
+                        if has_claude_gpt {
+                            // 1. Claude/GPT Weekly limit
+                            let (rem_pct, used_pct, resets_at, reset_sec, detail) = if let Some(w) = claude_weekly {
+                                let rem = (w.remaining_fraction * 100.0).clamp(0.0, 100.0);
+                                (Some((rem * 10.0).round() / 10.0), Some(((100.0 - rem) * 10.0).round() / 10.0), w.resets_at, w.reset_in_seconds, "适用于 Claude Opus 5.5 / Sonnet 5.5 及 GPT 等高阶模型")
+                            } else {
+                                (Some(100.0), Some(0.0), None, None, "高阶模型周总用量池 (额度充足)")
+                            };
+                            windows.push(QuotaWindow {
+                                name: "Claude & GPT · 周用量限制 (Weekly limit)".into(),
+                                used_percent: used_pct,
+                                remaining_percent: rem_pct,
+                                resets_at,
+                                reset_in_seconds: reset_sec,
+                                detail: Some(detail.into()),
+                            });
+
+                            // 2. Claude/GPT 5h limit
+                            let (rem_pct, used_pct, resets_at, reset_sec, detail) = if let Some(w) = claude_5h {
+                                let rem = (w.remaining_fraction * 100.0).clamp(0.0, 100.0);
+                                (Some((rem * 10.0).round() / 10.0), Some(((100.0 - rem) * 10.0).round() / 10.0), w.resets_at, w.reset_in_seconds, "Claude / GPT 短周期突发速率窗口")
+                            } else {
+                                (Some(100.0), Some(0.0), None, None, "Claude / GPT 短周期突发速率窗口 (未受限/充足)")
+                            };
+                            windows.push(QuotaWindow {
+                                name: "Claude & GPT · 5小时速率 (5h limit)".into(),
+                                used_percent: used_pct,
+                                remaining_percent: rem_pct,
+                                resets_at,
+                                reset_in_seconds: reset_sec,
+                                detail: Some(detail.into()),
+                            });
+                        }
+
+                        // Append any Argon or custom model windows
+                        windows.extend(other_windows);
                     }
                     break;
                 }

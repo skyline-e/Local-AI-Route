@@ -140,38 +140,71 @@ pub async fn query_quota(
             if resp.status().is_success() {
                 if let Ok(data) = resp.json::<Value>().await {
                     _remote_fetched = true;
-                    // Parse windows (5-hour, 7-day)
-                    // Sample structures can have rateLimits or five_hour / seven_day
-                    if let Some(rate_limits) = data.get("rateLimits").or_else(|| data.get("rateLimitsByLimitId").and_then(|m| m.get("codex"))) {
-                        if let Some(primary) = rate_limits.get("primary") {
-                            let used = primary.get("usedPercent").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    // Parse rate limits: support both snake_case (rate_limit) and camelCase (rateLimits)
+                    let rate_limits_opt = data.get("rate_limit")
+                        .or_else(|| data.get("rateLimits"))
+                        .or_else(|| data.get("rateLimitsByLimitId").and_then(|m| m.get("codex")));
+
+                    if let Some(rate_limits) = rate_limits_opt {
+                        // Primary window (typically 5-hour rolling window)
+                        if let Some(primary) = rate_limits.get("primary_window").or_else(|| rate_limits.get("primary")) {
+                            let used = primary.get("used_percent")
+                                .or_else(|| primary.get("usedPercent"))
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(0.0);
                             let remaining = (100.0 - used).clamp(0.0, 100.0);
-                            let resets_at_ts = primary.get("resetsAt").and_then(|v| v.as_i64());
+
+                            let resets_at_ts = primary.get("reset_at")
+                                .or_else(|| primary.get("resetsAt"))
+                                .and_then(|v| v.as_i64())
+                                .or_else(|| {
+                                    primary.get("reset_after_seconds")
+                                        .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
+                                        .map(|s| Utc::now().timestamp() + s)
+                                });
                             let (formatted, sec) = format_ts(resets_at_ts);
 
+                            let limit_sec = primary.get("limit_window_seconds").and_then(|v| v.as_i64()).unwrap_or(18000);
+                            let hours = ((limit_sec + 1800) / 3600).max(1);
+
                             windows.push(QuotaWindow {
-                                name: "5小时窗口 (5-Hour Window)".into(),
+                                name: format!("{}小时速率窗口 ({}-Hour Window)", hours, hours),
                                 used_percent: Some((used * 10.0).round() / 10.0),
                                 remaining_percent: Some((remaining * 10.0).round() / 10.0),
                                 resets_at: formatted,
                                 reset_in_seconds: sec,
-                                detail: Some("滚动短周期限制 (Short-term rolling limit)".into()),
+                                detail: Some(format!("ChatGPT {} · {}小时滚动速率用量限制", identity.plan_type.as_deref().unwrap_or("Plus"), hours)),
                             });
                         }
 
-                        if let Some(secondary) = rate_limits.get("secondary") {
-                            let used = secondary.get("usedPercent").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        // Secondary window (typically 7-day rolling window)
+                        if let Some(secondary) = rate_limits.get("secondary_window").or_else(|| rate_limits.get("secondary")) {
+                            let used = secondary.get("used_percent")
+                                .or_else(|| secondary.get("usedPercent"))
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(0.0);
                             let remaining = (100.0 - used).clamp(0.0, 100.0);
-                            let resets_at_ts = secondary.get("resetsAt").and_then(|v| v.as_i64());
+
+                            let resets_at_ts = secondary.get("reset_at")
+                                .or_else(|| secondary.get("resetsAt"))
+                                .and_then(|v| v.as_i64())
+                                .or_else(|| {
+                                    secondary.get("reset_after_seconds")
+                                        .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
+                                        .map(|s| Utc::now().timestamp() + s)
+                                });
                             let (formatted, sec) = format_ts(resets_at_ts);
 
+                            let limit_sec = secondary.get("limit_window_seconds").and_then(|v| v.as_i64()).unwrap_or(604800);
+                            let days = ((limit_sec + 43200) / 86400).max(1);
+
                             windows.push(QuotaWindow {
-                                name: "周用量窗口 (Weekly Window)".into(),
+                                name: if days >= 7 { "周用量窗口 (Weekly Window)".into() } else { format!("{}天速率窗口 ({}-Day Window)", days, days) },
                                 used_percent: Some((used * 10.0).round() / 10.0),
                                 remaining_percent: Some((remaining * 10.0).round() / 10.0),
                                 resets_at: formatted,
                                 reset_in_seconds: sec,
-                                detail: Some("每周配额限制 (Weekly limit)".into()),
+                                detail: Some(format!("ChatGPT 每周总用量限制 ({}天滚动重置)", days)),
                             });
                         }
                     }
@@ -180,18 +213,25 @@ pub async fn query_quota(
         }
     }
 
-    // 2. If remote usage didn't succeed or provided no windows, provide subscription snapshot
-    if windows.is_empty() {
-        if let Some(ref until_str) = identity.active_until {
-            let mut formatted_until = until_str.clone();
-            let mut sec_remaining = None;
-            if let Ok(dt) = DateTime::parse_from_rfc3339(until_str) {
-                let diff = dt.with_timezone(&Utc) - Utc::now();
-                sec_remaining = Some(diff.num_seconds().max(0));
-                let local_time = dt.with_timezone(&chrono::Local);
-                formatted_until = local_time.format("%Y-%m-%d %H:%M:%S").to_string();
-            }
+    // 2. Subscription expiration status & fallback card
+    if let Some(ref until_str) = identity.active_until {
+        let mut formatted_until = until_str.clone();
+        let mut sec_remaining = None;
+        if let Ok(dt) = DateTime::parse_from_rfc3339(until_str) {
+            let diff = dt.with_timezone(&Utc) - Utc::now();
+            sec_remaining = Some(diff.num_seconds().max(0));
+            let local_time = dt.with_timezone(&chrono::Local);
+            formatted_until = local_time.format("%Y-%m-%d %H:%M:%S").to_string();
+        }
 
+        extra_info.insert("subscription_expires_at".into(), formatted_until.clone());
+        if let Some(sec) = sec_remaining {
+            extra_info.insert("subscription_sec_remaining".into(), sec.to_string());
+            extra_info.insert("subscription_is_expired".into(), if sec == 0 { "true" } else { "false" }.into());
+        }
+
+        // Only if remote usage returned no rate limits, provide subscription fallback card
+        if windows.is_empty() {
             windows.push(QuotaWindow {
                 name: "订阅有效期 (Subscription Active Until)".into(),
                 used_percent: None,
@@ -200,16 +240,16 @@ pub async fn query_quota(
                 reset_in_seconds: sec_remaining,
                 detail: Some(format!("套餐: {}", identity.plan_type.as_deref().unwrap_or("ChatGPT Plus"))),
             });
-        } else {
-            windows.push(QuotaWindow {
-                name: "ChatGPT 账号就绪 (Account Ready)".into(),
-                used_percent: None,
-                remaining_percent: None,
-                resets_at: None,
-                reset_in_seconds: None,
-                detail: Some(format!("套餐: {}", identity.plan_type.as_deref().unwrap_or("Standard"))),
-            });
         }
+    } else if windows.is_empty() {
+        windows.push(QuotaWindow {
+            name: "ChatGPT 账号就绪 (Account Ready)".into(),
+            used_percent: None,
+            remaining_percent: None,
+            resets_at: None,
+            reset_in_seconds: None,
+            detail: Some(format!("套餐: {}", identity.plan_type.as_deref().unwrap_or("Standard"))),
+        });
     }
 
     if let Some(plan) = &identity.plan_type {

@@ -414,41 +414,25 @@ pub async fn query_quota(
     if let Some(exp) = identity.expires_at {
         let exp_ts = exp.timestamp();
         let rem_sec = (exp_ts - now.timestamp()).max(0);
+        let is_expired = exp <= now;
         let resets_at_str = exp.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string();
 
-        let detail_str = if exp <= now {
-            "已过期 (Expired)".to_string()
+        let detail_str = if is_expired {
+            "已过期".to_string()
         } else {
             let dur = exp - now;
             let days = dur.num_days();
             if days >= 1 {
-                format!("剩余有效期约 {} 天", days)
+                format!("有效 (剩余 {} 天)", days)
             } else {
-                format!("剩余有效期约 {} 小时", dur.num_hours().max(1))
+                format!("有效 (剩余 {} 小时)", dur.num_hours().max(1))
             }
         };
 
-        // If JWT has `iat`, calculate remaining percentage
-        let rem_pct = if let Some(claims_val) = decode_jwt_claims(&serde_json::from_str::<AuthPayload>(&bundle.decrypted_json).map(|p| p.access_token).unwrap_or_default()) {
-            if let Some(iat) = claims_val.get("iat").and_then(|v| v.as_i64()) {
-                let total = (exp_ts - iat).max(1);
-                let rem = (exp_ts - now.timestamp()).max(0);
-                Some(((rem as f64 / total as f64) * 100.0).clamp(0.0, 100.0).round())
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        windows.push(QuotaWindow {
-            name: "Token Expiry (令牌有效期)".into(),
-            used_percent: rem_pct.map(|p| 100.0 - p),
-            remaining_percent: rem_pct,
-            resets_at: Some(resets_at_str),
-            reset_in_seconds: Some(rem_sec),
-            detail: Some(detail_str),
-        });
+        extra_info.insert("token_expires_at".into(), resets_at_str);
+        extra_info.insert("token_sec_remaining".into(), rem_sec.to_string());
+        extra_info.insert("token_is_expired".into(), if is_expired { "true" } else { "false" }.into());
+        extra_info.insert("token_status".into(), detail_str);
     }
 
     // 2. Factory Rolling Rate Limit Windows
