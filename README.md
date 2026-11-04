@@ -15,14 +15,14 @@
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="MIT License" />
 </p>
 
-**Local-AI-Route** 是一款专为桌面 AI 应用打造的轻量级、免全局 TUN、免改系统代理的**进程级本地代理启动与管理工具**。开箱**原生深度适配**：
+**Local-AI-Route** 是一款专为桌面 AI 应用打造的轻量级、免全局 TUN、免改系统代理的**进程级本地代理启动与多账号管理工具**。开箱**原生深度适配**：
 
 - 🤖 **ChatGPT**（兼容 Windows 商店/独立安装包、macOS App Bundle、Linux 桌面客户端）
 - 🧠 **Claude**（兼容 Windows MSIX/Squirrel、macOS App Bundle、Linux 桌面端）
 - ✨ **Gemini 桌面版**（兼容 Windows Squirrel、macOS App Bundle、Linux 桌面端）
 - 🌌 **Antigravity 桌面版**
 - ⚡ **Antigravity IDE**（精确区分注册表与应用标识，专项保障 LSP 子进程代理继承）
-- 🏭 **Factory (桌面版) / Factory Droid**（兼容 Windows 安装包/Squirrel/CLI `droid`、macOS App Bundle、Linux 桌面端与二进制）
+- 🏭 **Factory 桌面版**（兼容 Windows 安装包/Squirrel/CLI `droid`、macOS App Bundle、Linux 桌面端与二进制）
 - 🧩 **自定义扩展**：一键添加任意 Chromium / Electron 类桌面 AI 应用（如 Cursor、Windsurf 等）
 
 > [!NOTE]
@@ -38,11 +38,10 @@
 ## 核心特性
 
 - 🎯 **免全局 TUN / 免改系统代理**：纯进程级网络接管，只让指定 AI 应用走代理，内网 VPN、局域网访问与日常应用完全不受干扰。
-- 🤖 **深度适配主流桌面 AI 应用**：开箱支持 ChatGPT、Claude、Gemini 桌面版、Antigravity 桌面版、Antigravity IDE 与 Factory (桌面版)，并支持一键添加任意 Chromium / Electron 应用（如 Cursor、Windsurf）。
-- 🎛️ **多应用并发与独立分流**：Master-Detail 左右分栏紧凑布局，彻底消除长滚动条；支持悬浮快捷启停与各应用独立「走代理 / 直连」分流；全局代理独立收口，支持端口一键扫描与 `NO_PROXY` 规则。
+- 🤖 **深度适配主流桌面 AI 应用**：开箱支持 ChatGPT、Claude、Gemini 桌面版、Antigravity 桌面版、Antigravity IDE 与 Factory 桌面版，并支持一键添加任意 Chromium / Electron 应用（如 Cursor、Windsurf）。
 - 🔄 **智能状态感知与安全重启**：实时感知运行状态、直连冲突与代理端口变更；优先发送窗口平滑退出信号，保障工作区内容安全。
 - 🩺 **四维立体连接诊断**：包含代理隧道可达性、命令行启动参数、LSP 子进程环境继承及内核级 TCP 连接快照，支持一键隐私脱敏导出。
-- 👥 **多账号管理与实时配额监控**：原生适配 Antigravity、ChatGPT、Claude Desktop 以及 Factory (桌面版) / Droid，支持一键免冲突账号切换、进程安全重启、AES-256-GCM / DPAPI 凭据安全解密以及会话令牌有效期与 5 小时/7 天/30 天配额与重置倒计时精准监控。
+- 👥 **多账号管理与实时配额监控**：原生适配 Antigravity、ChatGPT、Claude Desktop 以及 Factory 桌面版，支持一键免冲突账号切换、进程安全重启、AES-256-GCM / DPAPI 凭据安全解密以及会话令牌有效期与 5 小时/7 天/30 天配额与重置倒计时精准监控。
 - 🚀 **极轻驻留与桌面快捷启动**：支持生成带原应用图标的桌面快捷方式，支持关闭至托盘与开机静默驻留，日常内存占用仅约 20MB。
 - 📦 **绿色便携与现代双语交互**：自动识别 `data/` 目录便携模式，支持中英双语即时切换与浅色/深色主题。
 
@@ -187,7 +186,7 @@ flowchart TD
   - **DPAPI + AES-256-GCM 安全提取**：Claude 桌面端将 OAuth 凭据以 Chromium v10 格式加密保存在 `%APPDATA%\Claude\config.json`（键 `oauth:tokenCacheV2`）。引擎利用 Windows DPAPI（`CryptUnprotectData`）安全解密 `Local State` 中的 AES 主密钥，随后通过 AES-256-GCM 还原明文 OAuth 访问令牌。
   - **Anthropic OAuth 配额与倒计时**：直连 `api.anthropic.com/api/oauth/usage`（携带 `anthropic-beta: oauth-2025-04-20`），精准获取 5 小时消息配额窗口、当前已消耗比例及精确到秒的重置倒计时。
   - **会话持久化与全新登录重置**：切换账号时完整持久化 `Network/Cookies` 数据库；同时提供“准备新登录”功能，一键归档当前活跃会话并重置为干净登录态，方便绑定新账号。
-- **Factory Desktop / Droid AES-256-GCM 凭证解密与三维滚动配额体系**：
+- **Factory Desktop AES-256-GCM 凭证解密与三维滚动配额体系**：
   - **原子无损凭证切换**：基于 `~/.factory` 凭证包（`auth.v2.file`、`auth.v2.key`、`auth.encrypted`），通过 AES-256-GCM 算法安全加解密，并与 Windows 凭据管理器（`Factory CLI/auth-encryption-key`）保持深度同步。
   - **JWT 身份提取与令牌倒计时**：纯本地离线解析 WorkOS/Factory OAuth JWT，提取登录邮箱、用户 ID、订阅套餐（Pro / Plus / Max / Team / Enterprise）及精确的会话令牌过期倒计时与重置时间。
   - **三级滚动速率限制窗口**：原生感知 Factory 5 小时滚动速率窗口、7 天用量限制（超额自动降级至免费 Droid Core 模型池）与 30 天月度计费周期，并支持探测 Factory Analytics API 获取额度详情。
