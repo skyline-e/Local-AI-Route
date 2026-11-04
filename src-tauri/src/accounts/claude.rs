@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 const API_BASE: &str = "https://api.anthropic.com";
 
 pub fn find_claude_data_dir() -> Option<PathBuf> {
-    let mut candidates = Vec::new();
+    let mut candidates: Vec<PathBuf> = Vec::new();
 
     #[cfg(target_os = "windows")]
     {
@@ -47,6 +47,18 @@ pub fn find_claude_data_dir() -> Option<PathBuf> {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(config_dir) = dirs::config_dir() {
+            candidates.push(config_dir.join("Claude"));
+            candidates.push(config_dir.join("claude-desktop"));
+        }
+        if let Some(home) = dirs::home_dir() {
+            candidates.push(home.join(".config").join("Claude"));
+            candidates.push(home.join(".config").join("claude-desktop"));
+        }
+    }
+
     // Pick candidate with newest config.json
     let mut best: Option<PathBuf> = None;
     let mut newest_time = std::time::SystemTime::UNIX_EPOCH;
@@ -80,6 +92,7 @@ pub fn get_claude_cookie_files(claude_dir: &Path) -> Vec<PathBuf> {
     ]
 }
 
+#[allow(unused_variables)]
 pub fn load_claude_app_key(claude_dir: &Path) -> Result<Vec<u8>, String> {
     #[cfg(target_os = "windows")]
     {

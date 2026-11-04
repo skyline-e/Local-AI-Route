@@ -225,6 +225,7 @@ pub fn read_live_auth_bundle() -> Result<FactoryAuthBundle, String> {
         let v2_str = String::from_utf8_lossy(&v2_bytes).to_string();
 
         // 1. Check if auth.v2.key is on disk
+        #[allow(unused_mut)]
         let mut key_raw: Option<Vec<u8>> = files.get("auth.v2.key").and_then(|k| {
             let key_str = String::from_utf8_lossy(k).trim().to_string();
             B64.decode(key_str).ok()
