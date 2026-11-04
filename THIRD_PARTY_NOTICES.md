@@ -20,6 +20,21 @@
    - License: MIT License
    - Referenced concepts: Multi-channel `Claude.exe` executable discovery across MSIX/AppX package repositories, Squirrel versioned directories (`%LOCALAPPDATA%\AnthropicClaude\app-*`), standard installation paths, and Windows Uninstall registry keys; working directory alignment on launch; and terminating existing unproxied single-instance processes (`-RestartExisting`) prior to relaunching with proxy arguments (while omitting legacy forced `--disable-gpu` flags to preserve hardware acceleration).
 
+4. **agy-switch (`anglee0323/agy-switch`)**
+   - Repository: https://github.com/anglee0323/agy-switch
+   - License: MIT License
+   - Referenced concepts: Antigravity multi-account credential management with Windows Credential Manager (`gemini:antigravity`), CLI session tokens (`~/.gemini/antigravity-cli/antigravity-oauth-token`), Google OAuth token refresh flows, and Cloud Code model quota retrieval (`fetchAvailableModels`).
+
+5. **codex-account-switcher (`liuzhao1225/codex-account-switcher`)**
+   - Repository: https://github.com/liuzhao1225/codex-account-switcher
+   - License: MIT License
+   - Referenced concepts: ChatGPT / Codex multi-account configuration structure (`~/.codex/auth.json`), JWT identity and subscription claim decoding (`chatgpt_plan_type`, expiration), and 5-hour rate limit and weekly usage window normalization.
+
+6. **claude-account-switcher (`SnlperStripes/claude-account-switcher`)**
+   - Repository: https://github.com/SnlperStripes/claude-account-switcher
+   - License: MIT License
+   - Referenced concepts: Claude Desktop multi-account profile isolation, Windows DPAPI + AES-256-GCM Chromium v10 encrypted token cache extraction (`oauth:tokenCacheV2`), Network Cookies store backup and restoration, Anthropic OAuth usage querying (`/api/oauth/usage` with beta header), and fresh login state preparation.
+
 ---
 
 ## Core Open-Source Dependencies

@@ -41,6 +41,7 @@
 - 🎛️ **多应用并发与独立分流**：Master-Detail 左右分栏紧凑布局，彻底消除长滚动条；支持悬浮快捷启停与各应用独立「走代理 / 直连」分流；全局代理独立收口，支持端口一键扫描与 `NO_PROXY` 规则。
 - 🔄 **智能状态感知与安全重启**：实时感知运行状态、直连冲突与代理端口变更；优先发送窗口平滑退出信号，保障工作区内容安全。
 - 🩺 **四维立体连接诊断**：包含代理隧道可达性、命令行启动参数、LSP 子进程环境继承及内核级 TCP 连接快照，支持一键隐私脱敏导出。
+- 👥 **多账号管理与实时配额监控**：原生适配 Antigravity、ChatGPT 与 Claude Desktop，支持一键免冲突账号切换、进程安全重启、DPAPI 凭据安全解密以及 5 小时/7 天配额与重置倒计时精准监控。
 - 🚀 **极轻驻留与桌面快捷启动**：支持生成带原应用图标的桌面快捷方式，支持关闭至托盘与开机静默驻留，日常内存占用仅约 20MB。
 - 📦 **绿色便携与现代双语交互**：自动识别 `data/` 目录便携模式，支持中英双语即时切换与浅色/深色主题。
 
@@ -170,6 +171,24 @@ flowchart TD
 - **隐私脱敏机制**：
   诊断输出包含命令行与进程快照，引擎在生成报告时自动对用户家目录路径执行正则脱敏（统一映射为 `%USERPROFILE%`），确保一键复制排障报告至论坛或反馈时，绝不泄露个人系统用户名等隐私信息。
 
+### 5. 多账号平滑切换与实时配额监控体系
+
+针对 AI 开发者高频的多账号管理与防封控轮换需求，Local-AI-Route 原生集成了进程级安全切换与平台原生配额监控方案：
+
+- **Antigravity 凭据管理与 Google Cloud Code 配额**：
+  - **凭据双向同步**：通过 Win32 Credential Manager API（`CredReadW`/`CredWriteW`）与通用凭据 `gemini:antigravity` 交互，并同步更新 CLI 凭据缓存 `~/.gemini/antigravity-cli/antigravity-oauth-token`。
+  - **自动令牌刷新与配额探测**：集成 Google OAuth 2.0 刷新机制（`oauth2.googleapis.com/token`），直接调用 Google Cloud Code 内部配额接口（`fetchAvailableModels` 与 `loadCodeAssist`），实时解析高频模型（如 `gemini-2.5-pro`、`gemini-2.5-flash`）的剩余可用百分比与配额重置时间。
+- **ChatGPT / Codex 配置热切换与 JWT 声明解析**：
+  - **原子无损切换**：针对 `~/.codex/auth.json`（或环境变量 `CODEX_HOME`），通过临时文件原子替换避免写入中断损坏。
+  - **JWT 身份提取**：纯本地解码 `id_token`，免发网络请求即可离线获取账号邮箱、订阅类型（`chatgpt_plan_type`: Free / Plus / Pro / Team）及订阅有效截止期。
+  - **速率限制窗口追踪**：实时查询 `chatgpt.com/backend-api/wham/usage` 获取 5 小时请求上限与 7 天用量百分比。
+- **Claude Desktop Chromium v10 凭据解密与会话轮换**：
+  - **DPAPI + AES-256-GCM 安全提取**：Claude 桌面端将 OAuth 凭据以 Chromium v10 格式加密保存在 `%APPDATA%\Claude\config.json`（键 `oauth:tokenCacheV2`）。引擎利用 Windows DPAPI（`CryptUnprotectData`）安全解密 `Local State` 中的 AES 主密钥，随后通过 AES-256-GCM 还原明文 OAuth 访问令牌。
+  - **Anthropic OAuth 配额与倒计时**：直连 `api.anthropic.com/api/oauth/usage`（携带 `anthropic-beta: oauth-2025-04-20`），精准获取 5 小时消息配额窗口、当前已消耗比例及精确到秒的重置倒计时。
+  - **会话持久化与全新登录重置**：切换账号时完整持久化 `Network/Cookies` 数据库；同时提供“准备新登录”功能，一键归档当前活跃会话并重置为干净登录态，方便绑定新账号。
+- **切换生命周期保护**：
+  在执行账号切换前，引擎会自动检测目标应用是否正在运行，触发平滑安全退出；完成凭证和 Cookie 库原子替换后，再以用户配置的代理参数重新拉起应用，确保客户端 100% 以新身份加载。
+
 ---
 
 ## 快速开始
@@ -216,6 +235,6 @@ pnpm tauri build
 
 ## 致谢与开源许可
 
-- **设计参考与致谢**：本项目在架构设计与多渠道应用发现机制上参考并融合了 [oliver804/Local-Route-Launcher](https://github.com/oliver804/Local-Route-Launcher)、[DSDS-CMHL/EasyAntigravity](https://github.com/DSDS-CMHL/EasyAntigravity) 以及 [king-sheol/claude-desktop-windows-proxy-launcher](https://github.com/king-sheol/claude-desktop-windows-proxy-launcher) 的优秀思路，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+- **设计参考与致谢**：本项目在架构设计、多渠道应用发现及多账号切换方案上参考并融合了 [oliver804/Local-Route-Launcher](https://github.com/oliver804/Local-Route-Launcher)、[DSDS-CMHL/EasyAntigravity](https://github.com/DSDS-CMHL/EasyAntigravity)、[king-sheol/claude-desktop-windows-proxy-launcher](https://github.com/king-sheol/claude-desktop-windows-proxy-launcher)、[anglee0323/agy-switch](https://github.com/anglee0323/agy-switch)、[liuzhao1225/codex-account-switcher](https://github.com/liuzhao1225/codex-account-switcher) 以及 [SnlperStripes/claude-account-switcher](https://github.com/SnlperStripes/claude-account-switcher) 的优秀思路，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 - **本地零遥测**：无任何账号体系、无后台数据上报；连接诊断仅在用户主动点击时经本地配置的代理发起无凭据握手。
 - **许可证**：[MIT License](LICENSE)

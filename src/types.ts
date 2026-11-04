@@ -65,3 +65,42 @@ export interface AppSettings {
   targets: Record<string, TargetOverride>;
   custom_apps: TargetAppSpec[];
 }
+
+export interface QuotaWindow {
+  name: string;
+  used_percent?: number;
+  remaining_percent?: number;
+  resets_at?: string;
+  reset_in_seconds?: number;
+  detail?: string;
+}
+
+export interface AccountQuota {
+  provider: string;
+  account_id: string;
+  email?: string;
+  plan_type?: string;
+  fetched_at: string;
+  windows: QuotaWindow[];
+  extra_info: Record<string, string>;
+}
+
+export interface AccountProfile {
+  id: string;
+  provider: string;
+  name: string;
+  email?: string;
+  account_id?: string;
+  plan_type?: string;
+  created_at: string;
+  last_used_at?: string;
+  is_active: boolean;
+  quota?: AccountQuota;
+}
+
+export interface AccountSwitchResult {
+  success: boolean;
+  restarted_app: boolean;
+  message: string;
+}
+

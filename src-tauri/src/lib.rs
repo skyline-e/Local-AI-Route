@@ -1,3 +1,4 @@
+pub mod accounts;
 pub mod commands;
 pub mod core;
 pub mod platforms;
@@ -144,7 +145,14 @@ pub fn run() {
             commands::launch_app,
             commands::stop_app,
             commands::run_diagnostics,
-            commands::create_shortcut
+            commands::create_shortcut,
+            commands::get_accounts,
+            commands::import_current_account,
+            commands::add_manual_account,
+            commands::switch_account,
+            commands::delete_account,
+            commands::refresh_quota,
+            commands::prepare_new_claude_login
         ])
         .setup(move |app| {
             // Build Tray Menu

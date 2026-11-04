@@ -190,3 +190,103 @@ pub fn create_shortcut(app_id: String, state: State<'_, AppState>) -> Result<Str
 
     create_desktop_shortcut(&target.id, &target.name, &target.exe_path)
 }
+
+use crate::accounts::models::{AccountProfile, AccountQuota, AccountSwitchResult};
+
+#[tauri::command]
+pub fn get_accounts(app_id: String) -> Result<Vec<AccountProfile>, String> {
+    crate::accounts::list_accounts(&app_id)
+}
+
+#[tauri::command]
+pub async fn import_current_account(
+    app_id: String,
+    custom_name: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<AccountProfile, String> {
+    let proxy = {
+        let settings = safe_lock(&state.settings);
+        settings.proxy.clone()
+    };
+    crate::accounts::import_current_account(&app_id, custom_name, Some(&proxy)).await
+}
+
+#[tauri::command]
+pub async fn add_manual_account(
+    app_id: String,
+    name: String,
+    raw_content: String,
+    state: State<'_, AppState>,
+) -> Result<AccountProfile, String> {
+    let proxy = {
+        let settings = safe_lock(&state.settings);
+        settings.proxy.clone()
+    };
+    crate::accounts::add_account_manual(&app_id, name, raw_content, Some(&proxy)).await
+}
+
+#[tauri::command]
+pub async fn switch_account(
+    app_id: String,
+    account_id: String,
+    state: State<'_, AppState>,
+) -> Result<AccountSwitchResult, String> {
+    let (target_spec, proxy, pids) = {
+        let mut settings = safe_lock(&state.settings);
+        let target = resolve_and_heal_target(&mut settings, &app_id).ok();
+
+        let mut sys = safe_lock(&state.sys);
+        refresh_processes_for_inspection(&mut sys, false);
+        let pids = if let Some(ref t) = target {
+            let runtime = inspect_app_state(&sys, t, &settings.proxy);
+            if matches!(
+                runtime.status,
+                RunStatus::RunningProxied
+                    | RunStatus::RunningDirect
+                    | RunStatus::RunningUnproxied
+                    | RunStatus::RestartNeeded
+            ) {
+                runtime.pids
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+
+        (target, settings.proxy.clone(), pids)
+    };
+
+    crate::accounts::switch_account(
+        &app_id,
+        &account_id,
+        pids,
+        target_spec.as_ref(),
+        Some(&proxy),
+    )
+    .await
+}
+
+#[tauri::command]
+pub fn delete_account(app_id: String, account_id: String) -> Result<(), String> {
+    crate::accounts::delete_account(&app_id, &account_id)
+}
+
+#[tauri::command]
+pub async fn refresh_quota(
+    app_id: String,
+    account_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<AccountQuota, String> {
+    let proxy = {
+        let settings = safe_lock(&state.settings);
+        settings.proxy.clone()
+    };
+    crate::accounts::refresh_quota(&app_id, account_id, Some(&proxy)).await
+}
+
+#[tauri::command]
+pub fn prepare_new_claude_login() -> Result<String, String> {
+    crate::accounts::prepare_new_claude_login()
+}
+

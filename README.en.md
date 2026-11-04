@@ -41,6 +41,7 @@
 - 🎛️ **Concurrent Management & Independent Toggling**: Master-Detail split layout completely eliminates vertical page scrolling, featuring quick-action hover controls, per-app "Proxied / Direct" switches, isolated global proxy settings, and local port scanning.
 - 🔄 **Smart State Sensing & Safe Restart**: Real-time detection of running state, direct conflicts, and proxy port drift; sends graceful close signals first to safeguard workspace data.
 - 🩺 **Four-Dimensional Diagnostics Engine**: Comprehensive diagnostics spanning upstream tunnel reachability, main CLI arguments, LSP child process env inheritance, and kernel-level TCP snapshots with one-click privacy redaction.
+- 👥 **Multi-Account Switching & Live Quota Monitoring**: Native support for Antigravity, ChatGPT, and Claude Desktop, featuring atomic credential switching, safe process relaunch, DPAPI credential decryption, and real-time 5-hour/weekly quota usage and reset countdowns.
 - 🚀 **Desktop Shortcuts & Lightweight Tray**: Generate standalone desktop shortcuts with original icons, minimize to tray on close, and idle in the background with only ~20MB RAM usage.
 - 📦 **Portable & Modern Bilingual UI**: Auto-detects portable `data/` directory and standard installation modes, with instant English / Simplified Chinese switching and Dark / Light theme support.
 
@@ -170,6 +171,24 @@ When connection issues occur, conventional tools report vague "connection failed
 - **Privacy Redaction**:
   All exported diagnostic reports automatically regex-redact local user home directories (masking them as `%USERPROFILE%`), ensuring safety when sharing diagnostic logs publicly.
 
+### 5. Multi-Account Switching, Credential Decryption & Live Quota System
+
+To cater to heavy AI developers juggling multiple subscriptions and avoiding rate limits, Local-AI-Route natively integrates secure process-level account switching and live quota inspection:
+
+- **Antigravity Credentials & Google Cloud Code Quotas**:
+  - **Bidirectional Token Sync**: Interfaces with the Windows Credential Manager (`gemini:antigravity` generic credential) via Win32 Credential APIs (`CredReadW`/`CredWriteW`), while updating CLI token cache (`~/.gemini/antigravity-cli/antigravity-oauth-token`).
+  - **Automatic Token Refresh & Live Models Quota**: Integrates Google OAuth 2.0 refresh flow (`oauth2.googleapis.com/token`) and queries Google Cloud Code internal quota endpoints (`fetchAvailableModels` & `loadCodeAssist`), providing real-time percentage meters and reset countdowns for models like `gemini-2.5-pro` and `gemini-2.5-flash`.
+- **ChatGPT / Codex Atomic Switching & JWT Claim Decoding**:
+  - **Atomic Safe Switching**: Swaps `~/.codex/auth.json` (or `CODEX_HOME`) through atomic tempfiles to prevent profile corruption.
+  - **Offline JWT Identity Extraction**: Locally decodes the `id_token` JWT to instantly extract account email, plan tier (`chatgpt_plan_type`: Free / Plus / Pro / Team), and subscription expiration date without extra network roundtrips.
+  - **Rate Limit Window Tracking**: Direct querying of `chatgpt.com/backend-api/wham/usage` to track 5-hour message windows and 7-day usage limits.
+- **Claude Desktop Chromium v10 Credential Decryption & Session Management**:
+  - **DPAPI + AES-256-GCM Decryption**: Claude Desktop stores OAuth tokens in Chromium's encrypted v10 format in `%APPDATA%\Claude\config.json` (`oauth:tokenCacheV2`). The engine extracts the master key from `Local State` using Windows DPAPI (`CryptUnprotectData`), then decrypts the ciphertext via AES-256-GCM.
+  - **Anthropic OAuth Quota & Reset Timers**: Connects to `api.anthropic.com/api/oauth/usage` (with header `anthropic-beta: oauth-2025-04-20`) to display the live 5-hour rate limit utilization and second-precise countdown timers.
+  - **Session Persistence & Clean Login Reset**: Completely backs up and restores the `Network/Cookies` database alongside profile switches, and provides a "Prepare Clean Login" action to archive the current session and facilitate adding new accounts.
+- **Switching Lifecycle Protection**:
+  Before switching profiles, the engine verifies if the target app is running, initiates a graceful exit, atomically updates credentials and cookie stores, and relaunches the application with proxy flags intact.
+
 ---
 
 ## Quick Start
@@ -216,6 +235,6 @@ pnpm tauri build
 
 ## Acknowledgements & License
 
-- **Upstream Inspiration**: Architectural concepts and multi-channel discovery mechanisms are inspired by [oliver804/Local-Route-Launcher](https://github.com/oliver804/Local-Route-Launcher), [DSDS-CMHL/EasyAntigravity](https://github.com/DSDS-CMHL/EasyAntigravity), and [king-sheol/claude-desktop-windows-proxy-launcher](https://github.com/king-sheol/claude-desktop-windows-proxy-launcher). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
+- **Upstream Inspiration**: Architectural concepts, multi-channel discovery mechanisms, and multi-account switching models are inspired by [oliver804/Local-Route-Launcher](https://github.com/oliver804/Local-Route-Launcher), [DSDS-CMHL/EasyAntigravity](https://github.com/DSDS-CMHL/EasyAntigravity), [king-sheol/claude-desktop-windows-proxy-launcher](https://github.com/king-sheol/claude-desktop-windows-proxy-launcher), [anglee0323/agy-switch](https://github.com/anglee0323/agy-switch), [liuzhao1225/codex-account-switcher](https://github.com/liuzhao1225/codex-account-switcher), and [SnlperStripes/claude-account-switcher](https://github.com/SnlperStripes/claude-account-switcher). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
 - **Local Zero-Telemetry**: No tracking, no data collection.
 - **License**: [MIT License](LICENSE)

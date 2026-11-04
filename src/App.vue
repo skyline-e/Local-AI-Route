@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from "vue";
+import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AppSettings,
@@ -7,6 +7,9 @@ import {
   DiagReport,
   TargetAppSpec,
   RunStatus,
+  AccountProfile,
+  AccountQuota,
+  AccountSwitchResult,
 } from "./types";
 import { t, currentLang, detectSystemLanguage } from "./i18n";
 import {
@@ -37,6 +40,13 @@ import {
   Folder,
   Cpu,
   Terminal,
+  Users,
+  UserCheck,
+  RefreshCw,
+  Clock,
+  ArrowRightLeft,
+  Key,
+  PlusCircle,
 } from "lucide-vue-next";
 
 const settings = ref<AppSettings>({
@@ -76,6 +86,9 @@ function selectNav(id: string) {
   try {
     localStorage.setItem("local_ai_route_last_tab", id);
   } catch {}
+  if (["chatgpt", "claude", "antigravity-app", "antigravity-ide"].includes(id)) {
+    loadAccountsForCurrent();
+  }
 }
 
 // Toast Notification System
@@ -453,8 +466,201 @@ function statusText(status?: RunStatus): string {
   }
 }
 
-onMounted(() => {
-  loadInitialData();
+// Account Management State
+const accounts = ref<AccountProfile[]>([]);
+const isLoadingAccounts = ref(false);
+const isSwitchingAccount = ref(false);
+const isRefreshingQuota = ref(false);
+
+const isSupportsAccounts = computed(() => {
+  return ["chatgpt", "claude", "antigravity-app", "antigravity-ide"].includes(currentTarget.value?.id || "");
+});
+
+const activeAccount = computed(() => {
+  return accounts.value.find((a) => a.is_active) || (accounts.value.length > 0 ? accounts.value[0] : undefined);
+});
+
+async function loadAccountsForCurrent() {
+  const currentId = currentTarget.value?.id;
+  if (!currentId || !isSupportsAccounts.value) {
+    accounts.value = [];
+    return;
+  }
+  isLoadingAccounts.value = true;
+  try {
+    const list = await invoke<AccountProfile[]>("get_accounts", { appId: currentId });
+    accounts.value = list;
+  } catch (err) {
+    console.warn("load accounts failed:", err);
+  } finally {
+    isLoadingAccounts.value = false;
+  }
+}
+
+async function handleImportCurrentAccount() {
+  const currentId = currentTarget.value?.id;
+  if (!currentId) return;
+  isLoadingAccounts.value = true;
+  try {
+    const imported = await invoke<AccountProfile>("import_current_account", {
+      appId: currentId,
+      customName: null,
+    });
+    showToast(`${t("active_account_badge")}: ${imported.name} (${imported.email || "OK"})`, "success");
+    await loadAccountsForCurrent();
+  } catch (err) {
+    showToast(`导入失败: ${err}`, "error");
+  } finally {
+    isLoadingAccounts.value = false;
+  }
+}
+
+// Confirm Switch Account Modal
+const confirmSwitchModal = ref<{
+  open: boolean;
+  appId: string;
+  accountId: string;
+  accountName: string;
+}>({
+  open: false,
+  appId: "",
+  accountId: "",
+  accountName: "",
+});
+
+function requestSwitchAccount(account: AccountProfile) {
+  const currentId = currentTarget.value?.id;
+  if (!currentId) return;
+  confirmSwitchModal.value = {
+    open: true,
+    appId: currentId,
+    accountId: account.id,
+    accountName: account.name,
+  };
+}
+
+async function executeSwitchAccount() {
+  const { appId, accountId } = confirmSwitchModal.value;
+  confirmSwitchModal.value.open = false;
+  isSwitchingAccount.value = true;
+  try {
+    const res = await invoke<AccountSwitchResult>("switch_account", { appId, accountId });
+    showToast(res.message, "success");
+    await loadAccountsForCurrent();
+    await refreshStatuses();
+  } catch (err) {
+    showToast(`切换账号失败: ${err}`, "error");
+  } finally {
+    isSwitchingAccount.value = false;
+  }
+}
+
+async function handleRefreshQuota(accountId?: string) {
+  const currentId = currentTarget.value?.id;
+  if (!currentId) return;
+  isRefreshingQuota.value = true;
+  try {
+    await invoke<AccountQuota>("refresh_quota", {
+      appId: currentId,
+      accountId: accountId || null,
+    });
+    showToast("配额数据已更新", "success");
+    await loadAccountsForCurrent();
+  } catch (err) {
+    showToast(`刷新配额失败: ${err}`, "error");
+  } finally {
+    isRefreshingQuota.value = false;
+  }
+}
+
+async function handleDeleteAccount(account: AccountProfile) {
+  const currentId = currentTarget.value?.id;
+  if (!currentId) return;
+  try {
+    await invoke("delete_account", { appId: currentId, accountId: account.id });
+    showToast(t("account_deleted"), "success");
+    await loadAccountsForCurrent();
+  } catch (err) {
+    showToast(`删除失败: ${err}`, "error");
+  }
+}
+
+// Add Account Modal
+const addAccountModal = ref<{
+  open: boolean;
+  name: string;
+  content: string;
+}>({
+  open: false,
+  name: "",
+  content: "",
+});
+
+function openAddAccountModal() {
+  addAccountModal.value = {
+    open: true,
+    name: "",
+    content: "",
+  };
+}
+
+async function handleAddAccountSubmit() {
+  const currentId = currentTarget.value?.id;
+  if (!currentId || !addAccountModal.value.name.trim() || !addAccountModal.value.content.trim()) {
+    showToast(t("toast_fill_fields"), "warn");
+    return;
+  }
+  try {
+    await invoke<AccountProfile>("add_manual_account", {
+      appId: currentId,
+      name: addAccountModal.value.name.trim(),
+      rawContent: addAccountModal.value.content.trim(),
+    });
+    showToast("账号添加成功", "success");
+    addAccountModal.value.open = false;
+    await loadAccountsForCurrent();
+  } catch (err) {
+    showToast(`添加账号失败: ${err}`, "error");
+  }
+}
+
+async function handlePrepareClaudeLogin() {
+  try {
+    const msg = await invoke<string>("prepare_new_claude_login");
+    showToast(msg, "info", 5000);
+  } catch (err) {
+    showToast(`重置会话失败: ${err}`, "error");
+  }
+}
+
+function formatCountdown(sec?: number): string {
+  if (sec === undefined || sec === null || sec <= 0) return "--";
+  const hours = Math.floor(sec / 3600);
+  const minutes = Math.floor((sec % 3600) / 60);
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m`;
+  }
+  return "< 1m";
+}
+
+watch(
+  () => activeNavId.value,
+  (newId) => {
+    if (["chatgpt", "claude", "antigravity-app", "antigravity-ide"].includes(newId)) {
+      loadAccountsForCurrent();
+    }
+  }
+);
+
+onMounted(async () => {
+  await loadInitialData();
+  if (["chatgpt", "claude", "antigravity-app", "antigravity-ide"].includes(activeNavId.value)) {
+    await loadAccountsForCurrent();
+  }
+
   statusPollTimer = window.setInterval(refreshStatuses, 2500);
 });
 
@@ -932,6 +1138,256 @@ onUnmounted(() => {
             </div>
           </div>
 
+          <!-- Card: 多账号与配额管理 (Account & Quota Management) -->
+          <div
+            v-if="isSupportsAccounts"
+            class="p-4 rounded-xl border border-sky-200/80 dark:border-sky-900/60 bg-gradient-to-b from-sky-50/40 to-white dark:from-slate-900/60 dark:to-slate-900/30 space-y-4 shadow-xs"
+          >
+            <!-- Card Header: Title & Actions -->
+            <div class="flex items-center justify-between flex-wrap gap-2">
+              <div class="flex items-center gap-2">
+                <div class="w-7 h-7 rounded-lg bg-sky-500/10 dark:bg-sky-400/10 flex items-center justify-center text-sky-600 dark:text-sky-400">
+                  <Users class="w-4 h-4" />
+                </div>
+                <div>
+                  <div class="flex items-center gap-2">
+                    <span class="text-xs font-bold text-slate-800 dark:text-slate-200">{{ t("section_accounts") }}</span>
+                    <span class="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300">
+                      {{ accounts.length }}
+                    </span>
+                  </div>
+                  <p class="text-[11px] text-slate-400 leading-none mt-0.5">{{ t("section_accounts_desc") }}</p>
+                </div>
+              </div>
+
+              <!-- Top Toolbar Actions -->
+              <div class="flex items-center gap-1.5 flex-wrap">
+                <!-- Refresh Quota -->
+                <button
+                  @click="handleRefreshQuota()"
+                  :disabled="isRefreshingQuota || accounts.length === 0"
+                  class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1 transition shadow-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                  :title="t('btn_refresh_quota')"
+                >
+                  <RefreshCw :class="['w-3.5 h-3.5 text-sky-500', isRefreshingQuota ? 'animate-spin' : '']" />
+                  <span>{{ t("btn_refresh_quota") }}</span>
+                </button>
+
+                <!-- Import Active Account -->
+                <button
+                  @click="handleImportCurrentAccount()"
+                  :disabled="isLoadingAccounts"
+                  class="px-2.5 py-1 text-xs font-semibold rounded-lg bg-sky-600 hover:bg-sky-700 text-white flex items-center gap-1 transition shadow-xs disabled:opacity-50"
+                  :title="t('btn_import_active_account')"
+                >
+                  <RotateCw v-if="isLoadingAccounts" class="w-3.5 h-3.5 animate-spin" />
+                  <UserCheck v-else class="w-3.5 h-3.5" />
+                  <span>{{ t("btn_import_active_account") }}</span>
+                </button>
+
+                <!-- Add Account (Manual) -->
+                <button
+                  @click="openAddAccountModal()"
+                  class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1 transition shadow-xs"
+                >
+                  <PlusCircle class="w-3.5 h-3.5 text-indigo-500" />
+                  <span>{{ t("btn_add_account") }}</span>
+                </button>
+
+                <!-- Reset Claude Session (Claude only) -->
+                <button
+                  v-if="currentTarget.id === 'claude'"
+                  @click="handlePrepareClaudeLogin()"
+                  class="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-amber-300 dark:border-amber-800/60 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/60 flex items-center gap-1 transition"
+                  :title="t('claude_reset_session_tip')"
+                >
+                  <Key class="w-3 h-3 text-amber-500" />
+                  <span>{{ t("claude_reset_session_btn") }}</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Active Account Card & Quota Display -->
+            <div v-if="activeAccount" class="space-y-3">
+              <!-- Active Account Banner -->
+              <div class="p-3 rounded-lg border border-emerald-200/80 dark:border-emerald-800/60 bg-emerald-50/40 dark:bg-emerald-950/20 flex items-center justify-between flex-wrap gap-2">
+                <div class="flex items-center gap-3">
+                  <div class="w-8 h-8 rounded-full bg-emerald-600 text-white font-bold flex items-center justify-center text-xs shadow-xs">
+                    {{ activeAccount.name.slice(0, 2).toUpperCase() }}
+                  </div>
+                  <div>
+                    <div class="flex items-center gap-2">
+                      <span class="text-xs font-bold text-slate-800 dark:text-slate-100">{{ activeAccount.name }}</span>
+                      <span class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700/80">
+                        {{ t("active_account_badge") }}
+                      </span>
+                      <span v-if="activeAccount.plan_type" class="text-[10px] font-semibold px-2 py-0.5 rounded bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
+                        {{ activeAccount.plan_type }}
+                      </span>
+                    </div>
+                    <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 font-mono">
+                      {{ activeAccount.email || activeAccount.account_id || "本地凭证" }}
+                    </p>
+                  </div>
+                </div>
+
+                <div class="flex items-center gap-3 text-[11px] text-slate-400 font-mono">
+                  <span v-if="activeAccount.quota?.fetched_at">
+                    {{ t("btn_refresh_quota") }}: {{ activeAccount.quota.fetched_at }}
+                  </span>
+                </div>
+              </div>
+
+              <!-- Quota Windows Grid -->
+              <div v-if="activeAccount.quota?.windows?.length" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                <div
+                  v-for="(w, idx) in activeAccount.quota.windows"
+                  :key="idx"
+                  class="p-3 rounded-lg border border-slate-200/80 dark:border-slate-700/80 bg-white dark:bg-slate-800/80 flex flex-col justify-between space-y-2 shadow-2xs"
+                >
+                  <div class="flex items-start justify-between gap-1">
+                    <span class="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate" :title="w.name">
+                      {{ w.name }}
+                    </span>
+                    <span v-if="w.remaining_percent !== undefined && w.remaining_percent !== null" class="text-xs font-bold font-mono text-sky-600 dark:text-sky-400 shrink-0">
+                      {{ w.remaining_percent }}% {{ t("quota_remaining") }}
+                    </span>
+                    <span v-else-if="w.used_percent !== undefined && w.used_percent !== null" class="text-xs font-bold font-mono text-amber-600 dark:text-amber-400 shrink-0">
+                      {{ w.used_percent }}% {{ t("quota_used") }}
+                    </span>
+                  </div>
+
+                  <!-- Progress Bar -->
+                  <div v-if="w.remaining_percent != null || w.used_percent != null" class="w-full bg-slate-100 dark:bg-slate-700 h-2 rounded-full overflow-hidden">
+                    <div
+                      class="h-full rounded-full transition-all duration-300"
+                      :class="[
+                        (w.remaining_percent ?? (100 - (w.used_percent || 0))) > 40
+                          ? 'bg-emerald-500'
+                          : (w.remaining_percent ?? (100 - (w.used_percent || 0))) > 15
+                          ? 'bg-amber-500'
+                          : 'bg-rose-500'
+                      ]"
+                      :style="{ width: `${w.remaining_percent ?? (100 - (w.used_percent || 0))}%` }"
+                    ></div>
+                  </div>
+
+                  <!-- Reset Information -->
+                  <div class="flex items-center justify-between text-[10px] text-slate-400 pt-1 border-t border-slate-100 dark:border-slate-700/50">
+                    <div class="flex items-center gap-1 text-slate-500 dark:text-slate-400">
+                      <Clock class="w-3 h-3 text-slate-400 shrink-0" />
+                      <span v-if="w.reset_in_seconds && w.reset_in_seconds > 0" class="font-mono text-sky-600 dark:text-sky-400 font-semibold">
+                        {{ formatCountdown(w.reset_in_seconds) }}
+                      </span>
+                      <span v-else>--</span>
+                    </div>
+
+                    <span v-if="w.resets_at" class="font-mono truncate" :title="w.resets_at">
+                      {{ w.resets_at.split(' ')[1] || w.resets_at }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Empty State if no active account -->
+            <div
+              v-else-if="accounts.length === 0"
+              class="py-6 px-4 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 text-center space-y-2 bg-white/60 dark:bg-slate-800/40"
+            >
+              <Users class="w-8 h-8 text-slate-300 dark:text-slate-600 mx-auto" />
+              <p class="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto leading-relaxed">
+                {{ t("no_accounts_tip") }}
+              </p>
+              <button
+                @click="handleImportCurrentAccount()"
+                class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-sky-600 hover:bg-sky-700 text-white inline-flex items-center gap-1.5 shadow-sm transition"
+              >
+                <UserCheck class="w-3.5 h-3.5" />
+                {{ t("btn_import_active_account") }}
+              </button>
+            </div>
+
+            <!-- Saved Accounts List Section -->
+            <div v-if="accounts.length > 0" class="space-y-2 pt-2 border-t border-slate-200/60 dark:border-slate-700/60">
+              <div class="flex items-center justify-between">
+                <span class="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                  {{ t("saved_accounts_list") }} ({{ accounts.length }})
+                </span>
+              </div>
+
+              <div class="space-y-1.5">
+                <div
+                  v-for="acct in accounts"
+                  :key="acct.id"
+                  :class="[
+                    'p-2.5 rounded-lg border text-xs flex items-center justify-between transition',
+                    acct.is_active
+                      ? 'bg-sky-50/60 dark:bg-sky-950/30 border-sky-300 dark:border-sky-800/80 shadow-xs'
+                      : 'bg-white dark:bg-slate-800/80 border-slate-200/80 dark:border-slate-700/80 hover:bg-slate-50 dark:hover:bg-slate-750'
+                  ]"
+                >
+                  <div class="flex items-center gap-2.5 min-w-0 pr-2">
+                    <!-- Dot / Avatar -->
+                    <span
+                      :class="[
+                        'w-2 h-2 rounded-full shrink-0',
+                        acct.is_active ? 'bg-emerald-500 ring-2 ring-emerald-200 dark:ring-emerald-900' : 'bg-slate-300 dark:bg-slate-600'
+                      ]"
+                    ></span>
+
+                    <div class="min-w-0">
+                      <div class="flex items-center gap-1.5">
+                        <span class="font-semibold text-slate-800 dark:text-slate-200 truncate">{{ acct.name }}</span>
+                        <span v-if="acct.is_active" class="text-[9px] font-medium px-1.5 py-0.2 rounded bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800">
+                          {{ t("active_account_badge") }}
+                        </span>
+                        <span v-if="acct.plan_type" class="text-[9px] px-1.5 py-0.2 rounded bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800 font-mono">
+                          {{ acct.plan_type }}
+                        </span>
+                      </div>
+                      <p class="text-[11px] text-slate-400 font-mono truncate">
+                        {{ acct.email || acct.account_id || t("unbound_email") }}
+                      </p>
+                    </div>
+                  </div>
+
+                  <!-- Actions -->
+                  <div class="flex items-center gap-1.5 shrink-0">
+                    <button
+                      v-if="!acct.is_active"
+                      @click="requestSwitchAccount(acct)"
+                      :disabled="isSwitchingAccount"
+                      class="px-3 py-1 text-xs font-semibold rounded-lg bg-sky-600 hover:bg-sky-700 text-white flex items-center gap-1 shadow-xs transition disabled:opacity-50"
+                    >
+                      <ArrowRightLeft class="w-3 h-3" />
+                      <span>{{ t("btn_switch") }}</span>
+                    </button>
+
+                    <button
+                      @click="handleRefreshQuota(acct.id)"
+                      :disabled="isRefreshingQuota"
+                      class="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition"
+                      :title="t('btn_refresh_quota')"
+                    >
+                      <RefreshCw class="w-3.5 h-3.5" />
+                    </button>
+
+                    <button
+                      v-if="!acct.is_active"
+                      @click="handleDeleteAccount(acct)"
+                      class="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
+                      :title="t('btn_delete')"
+                    >
+                      <Trash2 class="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+
           <!-- Card 3: 运行监控与进程信息 (Process Monitoring & Runtime Info) -->
           <div class="p-4 rounded-xl border border-slate-200/80 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-900/30 space-y-3">
             <div class="flex items-center gap-2 text-xs font-bold text-slate-800 dark:text-slate-200">
@@ -1180,6 +1636,104 @@ onUnmounted(() => {
             class="px-4 py-1.5 text-xs font-medium rounded-lg bg-rose-600 text-white hover:bg-rose-700 shadow-sm"
           >
             {{ t("btn_remove_app") }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirm Switch Account Modal -->
+    <div
+      v-if="confirmSwitchModal.open"
+      class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in"
+    >
+      <div class="bg-white dark:bg-slate-800 rounded-xl max-w-sm w-full p-5 space-y-4 shadow-xl border border-slate-200 dark:border-slate-700">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-full bg-sky-100 dark:bg-sky-900/60 flex items-center justify-center text-sky-600 shrink-0">
+            <ArrowRightLeft class="w-5 h-5" />
+          </div>
+          <div>
+            <h3 class="text-sm font-bold text-slate-900 dark:text-white">{{ t("confirm_switch_title") }}</h3>
+            <p class="text-xs text-sky-600 dark:text-sky-400 font-semibold mt-0.5">{{ confirmSwitchModal.accountName }}</p>
+          </div>
+        </div>
+
+        <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+          {{ t("confirm_switch_desc") }}
+        </p>
+
+        <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-700/60">
+          <button
+            @click="confirmSwitchModal.open = false"
+            class="px-3.5 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition"
+          >
+            {{ t("btn_cancel") }}
+          </button>
+          <button
+            @click="executeSwitchAccount"
+            :disabled="isSwitchingAccount"
+            class="px-4 py-1.5 text-xs font-semibold rounded-lg bg-sky-600 hover:bg-sky-700 text-white flex items-center gap-1 shadow-sm transition disabled:opacity-50"
+          >
+            <RotateCw v-if="isSwitchingAccount" class="w-3.5 h-3.5 animate-spin" />
+            <span>{{ t("btn_confirm") }}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add / Import Account Modal -->
+    <div
+      v-if="addAccountModal.open"
+      class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in"
+    >
+      <div class="bg-white dark:bg-slate-800 rounded-xl max-w-lg w-full p-5 space-y-4 shadow-xl border border-slate-200 dark:border-slate-700">
+        <div class="flex items-center justify-between border-b border-slate-100 dark:border-slate-700/60 pb-3">
+          <div class="flex items-center gap-2">
+            <PlusCircle class="w-4 h-4 text-sky-500" />
+            <h3 class="text-sm font-bold text-slate-900 dark:text-white">{{ t("modal_add_account_title") }}</h3>
+          </div>
+          <button @click="addAccountModal.open = false" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+
+        <div class="space-y-3">
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+              {{ t("account_custom_name") }}
+            </label>
+            <input
+              v-model="addAccountModal.name"
+              type="text"
+              placeholder="e.g. Work, Personal, Client-1"
+              class="w-full text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 p-2.5 focus:ring-2 focus:ring-sky-500 outline-none"
+            />
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+              {{ t("account_credential_content") }}
+            </label>
+            <textarea
+              v-model="addAccountModal.content"
+              rows="6"
+              :placeholder="t('account_content_placeholder')"
+              class="w-full text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 p-2.5 focus:ring-2 focus:ring-sky-500 outline-none"
+            ></textarea>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-700/60">
+          <button
+            @click="addAccountModal.open = false"
+            class="px-3.5 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition"
+          >
+            {{ t("btn_cancel") }}
+          </button>
+          <button
+            @click="handleAddAccountSubmit"
+            class="px-4 py-1.5 text-xs font-semibold rounded-lg bg-sky-600 hover:bg-sky-700 text-white shadow-sm transition"
+          >
+            {{ t("btn_confirm") }}
           </button>
         </div>
       </div>
