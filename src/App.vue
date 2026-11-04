@@ -1305,20 +1305,20 @@ onUnmounted(() => {
               </div>
 
               <!-- Quota Windows Grid -->
-              <div v-if="activeAccount.quota?.windows?.length" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
+              <div v-if="activeAccount.quota?.windows?.length" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                 <div
                   v-for="(w, idx) in activeAccount.quota.windows"
                   :key="idx"
-                  class="p-3 rounded-lg border border-slate-200/80 dark:border-slate-700/80 bg-white dark:bg-slate-800/80 flex flex-col justify-between space-y-2 shadow-2xs"
+                  class="p-3.5 rounded-lg border border-slate-200/80 dark:border-slate-700/80 bg-white dark:bg-slate-800/80 flex flex-col justify-between space-y-2.5 shadow-2xs hover:border-slate-300 dark:hover:border-slate-600 transition"
                 >
-                  <div class="flex items-start justify-between gap-1">
-                    <span class="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate" :title="w.name">
+                  <div class="flex items-start justify-between gap-2">
+                    <span class="text-xs font-bold text-slate-800 dark:text-slate-100 break-words leading-snug flex-1" :title="w.name">
                       {{ w.name }}
                     </span>
-                    <span v-if="w.remaining_percent !== undefined && w.remaining_percent !== null" class="text-xs font-bold font-mono text-sky-600 dark:text-sky-400 shrink-0">
+                    <span v-if="w.remaining_percent !== undefined && w.remaining_percent !== null" class="text-xs font-bold font-mono text-sky-600 dark:text-sky-400 shrink-0 whitespace-nowrap pt-0.5">
                       {{ w.remaining_percent }}% {{ t("quota_remaining") }}
                     </span>
-                    <span v-else-if="w.used_percent !== undefined && w.used_percent !== null" class="text-xs font-bold font-mono text-amber-600 dark:text-amber-400 shrink-0">
+                    <span v-else-if="w.used_percent !== undefined && w.used_percent !== null" class="text-xs font-bold font-mono text-amber-600 dark:text-amber-400 shrink-0 whitespace-nowrap pt-0.5">
                       {{ w.used_percent }}% {{ t("quota_used") }}
                     </span>
                   </div>
@@ -1339,22 +1339,22 @@ onUnmounted(() => {
                   </div>
 
                   <!-- Reset Information -->
-                  <div class="flex items-center justify-between text-[10px] text-slate-400 pt-1 border-t border-slate-100 dark:border-slate-700/50">
-                    <div class="flex items-center gap-1 text-slate-500 dark:text-slate-400" :title="w.resets_at ? `重置/到期时间: ${w.resets_at}` : undefined">
-                      <Clock class="w-3 h-3 text-slate-400 shrink-0" />
+                  <div class="flex items-center justify-between text-[11px] text-slate-400 pt-1.5 border-t border-slate-100 dark:border-slate-700/50">
+                    <div class="flex items-center gap-1.5 text-slate-500 dark:text-slate-400" :title="w.resets_at ? `重置/到期时间: ${w.resets_at}` : undefined">
+                      <Clock class="w-3.5 h-3.5 text-slate-400 shrink-0" />
                       <span v-if="w.reset_in_seconds && w.reset_in_seconds > 0" class="font-mono text-sky-600 dark:text-sky-400 font-semibold">
                         {{ formatCountdown(w.reset_in_seconds) }}
                       </span>
                       <span v-else>--</span>
                     </div>
 
-                    <span v-if="w.resets_at" class="font-mono truncate max-w-[120px]" :title="`到期/重置时间: ${w.resets_at}`">
+                    <span v-if="w.resets_at" class="font-mono text-[10px] text-slate-400 shrink-0 ml-auto whitespace-nowrap" :title="`到期/重置时间: ${w.resets_at}`">
                       {{ w.resets_at }}
                     </span>
                   </div>
 
                   <!-- Detail Description -->
-                  <p v-if="w.detail" class="text-[10px] text-slate-400 dark:text-slate-400 leading-snug line-clamp-2" :title="w.detail">
+                  <p v-if="w.detail" class="text-[11px] text-slate-500 dark:text-slate-400 leading-snug line-clamp-2" :title="w.detail">
                     {{ w.detail }}
                   </p>
                 </div>

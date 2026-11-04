@@ -98,15 +98,38 @@ pub fn write_credential_payload(payload_json: &str) -> Result<(), String> {
 pub fn parse_email_from_payload(payload_json: &str) -> Option<String> {
     let val: serde_json::Value = serde_json::from_str(payload_json).ok()?;
     
-    // 1. Check id_token JWT
+    // 1. Direct top-level fields (e.g. Antigravity stores "id_token_email")
+    for key in &["id_token_email", "email", "user_email"] {
+        if let Some(em) = val.get(key).and_then(|v| v.as_str()) {
+            let trimmed = em.trim();
+            if !trimmed.is_empty() && trimmed.contains('@') {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+
+    // 2. Inside token object
+    if let Some(token) = val.get("token") {
+        for key in &["id_token_email", "email", "user_email"] {
+            if let Some(em) = token.get(key).and_then(|v| v.as_str()) {
+                let trimmed = em.trim();
+                if !trimmed.is_empty() && trimmed.contains('@') {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+        if let Some(id_token) = token.get("id_token").and_then(|v| v.as_str()) {
+            if let Some(email) = extract_email_from_jwt(id_token) {
+                return Some(email);
+            }
+        }
+    }
+
+    // 3. Top-level id_token JWT
     if let Some(id_token) = val.get("id_token").and_then(|v| v.as_str()) {
         if let Some(email) = extract_email_from_jwt(id_token) {
             return Some(email);
         }
-    }
-    // 2. Check token object
-    if let Some(email) = val.get("token").and_then(|t| t.get("email")).and_then(|e| e.as_str()) {
-        return Some(email.to_string());
     }
 
     None
@@ -262,8 +285,28 @@ pub async fn query_quota(
     let access_token = ensure_fresh_access_token(&mut val, proxy).await?;
     *payload_json = serde_json::to_string(&val).unwrap_or_else(|_| payload_json.clone());
 
-    let email = parse_email_from_payload(payload_json);
+    let mut email = parse_email_from_payload(payload_json);
     let client = super::build_http_client(proxy, 15);
+
+    // Fallback: If email is missing, fetch from Google OAuth userinfo endpoint
+    if email.is_none() && !access_token.is_empty() {
+        if let Ok(u_resp) = client
+            .get("https://www.googleapis.com/oauth2/v3/userinfo")
+            .bearer_auth(&access_token)
+            .send()
+            .await
+        {
+            if u_resp.status().is_success() {
+                if let Ok(uinfo) = u_resp.json::<serde_json::Value>().await {
+                    if let Some(em) = uinfo.get("email").and_then(|e| e.as_str()) {
+                        email = Some(em.to_string());
+                        val["id_token_email"] = serde_json::Value::String(em.to_string());
+                        *payload_json = serde_json::to_string(&val).unwrap_or_else(|_| payload_json.clone());
+                    }
+                }
+            }
+        }
+    }
 
     // 1. Fetch available models and quotas
     let mut windows = Vec::new();
@@ -395,9 +438,9 @@ pub async fn query_quota(
                                 let rem_pct = (rem_frac * 100.0).clamp(0.0, 100.0);
                                 let used_pct = (100.0 - rem_pct).clamp(0.0, 100.0);
                                 let win_type_suffix = if reset_sec.is_some_and(|s| s > 86400) {
-                                    "周用量限制 (Weekly limit)"
+                                    "周用量限制"
                                 } else {
-                                    "5小时速率 (5h limit)"
+                                    "5小时速率"
                                 };
                                 other_windows.push(QuotaWindow {
                                     name: format!("{} · {}", display, win_type_suffix),
@@ -420,7 +463,7 @@ pub async fn query_quota(
                                 (Some(100.0), Some(0.0), None, None, "Gemini 深度思考与主力模型周总用量池 (额度充足)")
                             };
                             windows.push(QuotaWindow {
-                                name: "Gemini Models · 周用量限制 (Weekly limit)".into(),
+                                name: "Gemini Models · 周用量限制".into(),
                                 used_percent: used_pct,
                                 remaining_percent: rem_pct,
                                 resets_at,
@@ -436,7 +479,7 @@ pub async fn query_quota(
                                 (Some(100.0), Some(0.0), None, None, "适用于 Gemini 2.5 Pro / Flash 等全部 Gemini 模型 (速率充足)")
                             };
                             windows.push(QuotaWindow {
-                                name: "Gemini Models · 5小时速率 (5h limit)".into(),
+                                name: "Gemini Models · 5小时速率".into(),
                                 used_percent: used_pct,
                                 remaining_percent: rem_pct,
                                 resets_at,
@@ -455,7 +498,7 @@ pub async fn query_quota(
                                 (Some(100.0), Some(0.0), None, None, "高阶模型周总用量池 (额度充足)")
                             };
                             windows.push(QuotaWindow {
-                                name: "Claude & GPT · 周用量限制 (Weekly limit)".into(),
+                                name: "Claude & GPT · 周用量限制".into(),
                                 used_percent: used_pct,
                                 remaining_percent: rem_pct,
                                 resets_at,
@@ -471,7 +514,7 @@ pub async fn query_quota(
                                 (Some(100.0), Some(0.0), None, None, "Claude / GPT 短周期突发速率窗口 (未受限/充足)")
                             };
                             windows.push(QuotaWindow {
-                                name: "Claude & GPT · 5小时速率 (5h limit)".into(),
+                                name: "Claude & GPT · 5小时速率".into(),
                                 used_percent: used_pct,
                                 remaining_percent: rem_pct,
                                 resets_at,

@@ -297,7 +297,7 @@ pub async fn query_quota(
                     let (formatted, sec) = format_rfc3339(w5.resets_at.as_deref());
 
                     windows.push(QuotaWindow {
-                        name: "5小时用量 (5-Hour Window)".into(),
+                        name: "5小时速率限制".into(),
                         used_percent: Some((used * 10.0).round() / 10.0),
                         remaining_percent: Some((rem * 10.0).round() / 10.0),
                         resets_at: formatted,
@@ -312,7 +312,7 @@ pub async fn query_quota(
                     let (formatted, sec) = format_rfc3339(w7.resets_at.as_deref());
 
                     windows.push(QuotaWindow {
-                        name: "周用量限制 (Weekly Limit)".into(),
+                        name: "周用量限制".into(),
                         used_percent: Some((used * 10.0).round() / 10.0),
                         remaining_percent: Some((rem * 10.0).round() / 10.0),
                         resets_at: formatted,

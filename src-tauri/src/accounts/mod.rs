@@ -54,8 +54,8 @@ pub async fn import_current_account(
     match provider {
         "antigravity" => {
             let mut payload = antigravity::read_current_credential_payload()?;
-            let email = antigravity::parse_email_from_payload(&payload);
-            let display_name = custom_name.unwrap_or_else(|| {
+            let mut email = antigravity::parse_email_from_payload(&payload);
+            let mut display_name = custom_name.clone().unwrap_or_else(|| {
                 if let Some(ref em) = email {
                     em.split('@').next().unwrap_or("Antigravity Account").to_string()
                 } else {
@@ -63,19 +63,53 @@ pub async fn import_current_account(
                 }
             });
 
-            // Check if already exists by email
-            if let Some(ref em) = email {
-                if let Some(pos) = existing.iter().position(|a| a.email.as_deref() == Some(em)) {
-                    // Update existing payload
-                    let existing_id = existing[pos].id.clone();
-                    storage::save_account_data(provider, &existing_id, "credential.json", payload.as_bytes())?;
-                    for a in &mut existing {
-                        a.is_active = a.id == existing_id;
-                    }
-                    existing[pos].last_used_at = Some(now_str.clone());
-                    let _ = storage::save_accounts(provider, &existing);
-                    return Ok(existing[pos].clone());
+            // Check if already exists by email OR if existing single account has no email yet (in-place upgrade)
+            let existing_pos = if let Some(ref em) = email {
+                existing.iter().position(|a| a.email.as_deref() == Some(em))
+                    .or_else(|| if existing.len() == 1 && existing[0].email.is_none() { Some(0) } else { None })
+            } else if existing.len() == 1 && existing[0].email.is_none() {
+                Some(0)
+            } else {
+                None
+            };
+
+            if let Some(pos) = existing_pos {
+                // Update existing payload
+                let existing_id = existing[pos].id.clone();
+                storage::save_account_data(provider, &existing_id, "credential.json", payload.as_bytes())?;
+                for a in &mut existing {
+                    a.is_active = a.id == existing_id;
                 }
+                existing[pos].last_used_at = Some(now_str.clone());
+                if email.is_some() {
+                    existing[pos].email = email.clone();
+                    existing[pos].account_id = email.clone();
+                    if custom_name.is_none() && existing[pos].name == "Antigravity Account" {
+                        if let Some(ref em) = email {
+                            existing[pos].name = em.split('@').next().unwrap_or("Antigravity Account").to_string();
+                        }
+                    }
+                }
+                let mut quota = None;
+                if let Ok(q) = antigravity::query_quota(&mut payload, &existing_id, proxy).await {
+                    let _ = storage::save_account_data(provider, &existing_id, "credential.json", payload.as_bytes());
+                    if existing[pos].email.is_none() && q.email.is_some() {
+                        existing[pos].email = q.email.clone();
+                        existing[pos].account_id = q.email.clone();
+                        if custom_name.is_none() && existing[pos].name == "Antigravity Account" {
+                            if let Some(ref em) = q.email {
+                                existing[pos].name = em.split('@').next().unwrap_or("Antigravity Account").to_string();
+                            }
+                        }
+                    }
+                    if q.plan_type.is_some() {
+                        existing[pos].plan_type = q.plan_type.clone();
+                    }
+                    quota = Some(q);
+                }
+                existing[pos].quota = quota;
+                let _ = storage::save_accounts(provider, &existing);
+                return Ok(existing[pos].clone());
             }
 
             // Save credential payload file
@@ -85,6 +119,14 @@ pub async fn import_current_account(
             if let Ok(q) = antigravity::query_quota(&mut payload, &account_id, proxy).await {
                 // write back possibly refreshed payload
                 let _ = storage::save_account_data(provider, &account_id, "credential.json", payload.as_bytes());
+                if email.is_none() && q.email.is_some() {
+                    email = q.email.clone();
+                    if custom_name.is_none() {
+                        if let Some(ref em) = email {
+                            display_name = em.split('@').next().unwrap_or("Antigravity Account").to_string();
+                        }
+                    }
+                }
                 quota = Some(q);
             }
 
@@ -740,6 +782,14 @@ pub async fn refresh_quota(
     }
     if accounts[idx].email.is_none() && quota.email.is_some() {
         accounts[idx].email = quota.email.clone();
+        if accounts[idx].account_id.is_none() {
+            accounts[idx].account_id = quota.email.clone();
+        }
+        if accounts[idx].name == "Antigravity Account" {
+            if let Some(ref em) = quota.email {
+                accounts[idx].name = em.split('@').next().unwrap_or("Antigravity Account").to_string();
+            }
+        }
     }
     let _ = storage::save_accounts(provider, &accounts);
 

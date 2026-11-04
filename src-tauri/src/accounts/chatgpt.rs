@@ -168,7 +168,7 @@ pub async fn query_quota(
                             let hours = ((limit_sec + 1800) / 3600).max(1);
 
                             windows.push(QuotaWindow {
-                                name: format!("{}小时速率窗口 ({}-Hour Window)", hours, hours),
+                                name: format!("{}小时速率限制", hours),
                                 used_percent: Some((used * 10.0).round() / 10.0),
                                 remaining_percent: Some((remaining * 10.0).round() / 10.0),
                                 resets_at: formatted,
@@ -199,7 +199,7 @@ pub async fn query_quota(
                             let days = ((limit_sec + 43200) / 86400).max(1);
 
                             windows.push(QuotaWindow {
-                                name: if days >= 7 { "周用量窗口 (Weekly Window)".into() } else { format!("{}天速率窗口 ({}-Day Window)", days, days) },
+                                name: if days >= 7 { "周用量限制".into() } else { format!("{}天速率限制", days) },
                                 used_percent: Some((used * 10.0).round() / 10.0),
                                 remaining_percent: Some((remaining * 10.0).round() / 10.0),
                                 resets_at: formatted,

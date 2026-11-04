@@ -504,7 +504,7 @@ pub async fn query_quota(
 
     // 5-Hour Rolling Rate Limit Window
     windows.push(QuotaWindow {
-        name: "5-Hour Rolling Window (5小时滚动窗口)".into(),
+        name: "5小时滚动速率限制".into(),
         used_percent: None,
         remaining_percent: Some(100.0),
         resets_at: None,
@@ -514,7 +514,7 @@ pub async fn query_quota(
 
     // 7-Day Rolling Rate Limit Window
     windows.push(QuotaWindow {
-        name: "7-Day Rolling Window (7天滚动窗口)".into(),
+        name: "7天滚动速率限制".into(),
         used_percent: None,
         remaining_percent: Some(100.0),
         resets_at: None,
@@ -524,7 +524,7 @@ pub async fn query_quota(
 
     // 30-Day Rolling Cycle
     windows.push(QuotaWindow {
-        name: "30-Day Billing Cycle (30天滚动周期)".into(),
+        name: "30天计费重置周期".into(),
         used_percent: None,
         remaining_percent: Some(100.0),
         resets_at: None,
