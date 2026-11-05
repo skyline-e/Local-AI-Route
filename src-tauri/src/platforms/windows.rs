@@ -887,7 +887,7 @@ pub fn activate_msix_application(app_id: &str, exe_path: &str, args: &[String]) 
         vtbl: *const IApplicationActivationManagerVtbl,
     }
 
-    #[link(name = "ole32.dll", kind = "raw-dylib")]
+    #[link(name = "ole32", kind = "raw-dylib")]
     extern "system" {
         fn CoInitializeEx(pv_reserved: *const c_void, dw_co_init: u32) -> i32;
         fn CoUninitialize();
@@ -988,7 +988,7 @@ pub fn shell_execute_application(
         h_process: *mut c_void,
     }
 
-    #[link(name = "shell32.dll", kind = "raw-dylib")]
+    #[link(name = "shell32", kind = "raw-dylib")]
     extern "system" {
         fn ShellExecuteExW(p_exec_info: *mut SHELLEXECUTEINFOW) -> i32;
     }
