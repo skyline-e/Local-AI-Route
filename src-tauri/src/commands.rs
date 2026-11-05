@@ -1,13 +1,14 @@
 use crate::core::controller::{
-    ensure_stopped_before_relaunch, inspect_app_state, launch_target, refresh_processes_for_inspection,
-    should_heal_builtin_path, stop_target, sync_gemini_profile_proxy,
+    ensure_stopped_before_relaunch, inspect_app_state, is_executable_present, launch_target,
+    refresh_processes_for_inspection, should_heal_builtin_path, stop_target, sync_gemini_profile_proxy,
 };
 use crate::core::diagnostics::run_diagnostics as run_diag_internal;
 use crate::core::models::{AppRuntimeState, AppSettings, DiagReport, RunStatus, TargetAppSpec, TargetOverride};
 use crate::core::presets::{find_target_spec, get_effective_targets as get_effective_targets_internal};
 use crate::core::proxy::scan_local_proxy_ports as scan_ports_internal;
 use crate::core::storage::save_settings as save_settings_internal;
-use crate::platforms::{create_desktop_shortcut, discover_target_executable};
+use crate::platforms::{create_desktop_shortcut, discover_target_executable, resolve_executable_for_launch};
+use std::path::Path;
 use std::sync::Mutex;
 use sysinfo::System;
 use tauri::State;
@@ -37,11 +38,29 @@ pub fn get_settings(app: tauri::AppHandle, state: State<'_, AppState>) -> AppSet
     for preset in crate::core::presets::builtin_presets() {
         let entry = settings.targets.entry(preset.id.clone()).or_insert_with(TargetOverride::default);
         if should_heal_builtin_path(&entry.exe_path) {
-            if let Some(detected) = discover_target_executable(&preset.id) {
+            let candidate = discover_target_executable(&preset.id).or_else(|| {
+                if !entry.exe_path.is_empty() {
+                    let resolved = resolve_executable_for_launch(&entry.exe_path);
+                    if resolved != entry.exe_path && is_executable_present(Path::new(&resolved)) {
+                        return Some(resolved);
+                    }
+                }
+                None
+            });
+            if let Some(detected) = candidate {
                 if entry.exe_path != detected {
                     entry.exe_path = detected;
                     updated = true;
                 }
+            }
+        }
+    }
+    for custom in &mut settings.custom_apps {
+        if !custom.exe_path.is_empty() && should_heal_builtin_path(&custom.exe_path) {
+            let resolved = resolve_executable_for_launch(&custom.exe_path);
+            if resolved != custom.exe_path && is_executable_present(Path::new(&resolved)) {
+                custom.exe_path = resolved;
+                updated = true;
             }
         }
     }
@@ -101,16 +120,38 @@ pub fn get_app_statuses(state: State<'_, AppState>) -> Vec<AppRuntimeState> {
     statuses
 }
 
-fn resolve_and_heal_target(settings: &mut AppSettings, app_id: &str) -> Result<TargetAppSpec, String> {
+pub(crate) fn resolve_and_heal_target(settings: &mut AppSettings, app_id: &str) -> Result<TargetAppSpec, String> {
     let mut target = find_target_spec(settings, app_id)
         .ok_or_else(|| format!("Target app '{}' not found", app_id))?;
 
-    if target.builtin && should_heal_builtin_path(&target.exe_path) {
-        if let Some(detected) = discover_target_executable(&target.id) {
+    if should_heal_builtin_path(&target.exe_path) {
+        let candidate = if target.builtin {
+            discover_target_executable(&target.id)
+        } else {
+            None
+        }
+        .or_else(|| {
+            if !target.exe_path.is_empty() {
+                let resolved = resolve_executable_for_launch(&target.exe_path);
+                if resolved != target.exe_path && is_executable_present(Path::new(&resolved)) {
+                    return Some(resolved);
+                }
+            }
+            None
+        });
+
+        if let Some(detected) = candidate {
             if target.exe_path != detected {
                 target.exe_path = detected.clone();
-                let entry = settings.targets.entry(target.id.clone()).or_insert_with(TargetOverride::default);
-                entry.exe_path = detected;
+                if target.builtin {
+                    let entry = settings
+                        .targets
+                        .entry(target.id.clone())
+                        .or_insert_with(TargetOverride::default);
+                    entry.exe_path = detected;
+                } else if let Some(custom) = settings.custom_apps.iter_mut().find(|c| c.id == target.id) {
+                    custom.exe_path = detected;
+                }
                 let _ = save_settings_internal(settings);
             }
         }
@@ -294,4 +335,3 @@ pub fn prepare_new_claude_login() -> Result<String, String> {
 pub fn prepare_new_factory_login() -> Result<String, String> {
     crate::accounts::factory::prepare_new_factory_login()
 }
-

@@ -1,5 +1,5 @@
 use super::models::{AppRuntimeState, ProxyConfig, RunStatus, TargetAppSpec};
-use super::proxy::{format_chromium_bypass_list, format_no_proxy_env};
+use super::proxy::{build_proxy_env_vars, format_chromium_bypass_list, PROXY_ENV_KEYS};
 use crate::platforms::request_graceful_close;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::Path;
@@ -18,12 +18,15 @@ pub fn refresh_processes_for_inspection(sys: &mut System, include_env: bool) {
 
 pub fn is_versioned_package_path(path: &str) -> bool {
     let norm = path.replace('/', "\\").to_lowercase();
-    norm.contains("\\windowsapps\\") || norm.contains("\\app-")
+    (norm.contains("\\windowsapps\\") && !norm.contains("\\microsoft\\windowsapps\\"))
+        || norm.contains("\\app-")
 }
 
 pub fn should_heal_builtin_path(exe_path: &str) -> bool {
+    let p = Path::new(exe_path);
     exe_path.is_empty()
-        || !is_executable_present(Path::new(exe_path))
+        || p.is_dir()
+        || !is_executable_present(p)
         || is_versioned_package_path(exe_path)
 }
 
@@ -130,40 +133,53 @@ pub fn is_executable_present(path: &Path) -> bool {
         }
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        if path.is_dir() {
-            let resolved = crate::platforms::resolve_executable_for_launch(&path.to_string_lossy());
-            if Path::new(&resolved).is_file() {
-                return true;
-            }
-        }
-    }
-
-    if path.is_file() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(meta) = path.metadata() {
-                if meta.permissions().mode() & 0o111 == 0 {
-                    return false;
+    if !path.is_dir() {
+        if path.is_file() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(meta) = path.metadata() {
+                    if meta.permissions().mode() & 0o111 == 0 {
+                        return false;
+                    }
                 }
             }
+            return true;
         }
-        return true;
+
+        if std::fs::symlink_metadata(path).map(|m| !m.is_dir()).unwrap_or(false) {
+            return true;
+        }
     }
 
-    std::fs::symlink_metadata(path).map(|m| !m.is_dir()).unwrap_or(false)
+    #[cfg(target_os = "windows")]
+    {
+        let resolved = crate::platforms::resolve_executable_for_launch(&path.to_string_lossy());
+        let res_path = Path::new(&resolved);
+        if !res_path.is_dir()
+            && (res_path.is_file()
+                || std::fs::symlink_metadata(res_path)
+                    .map(|m| !m.is_dir())
+                    .unwrap_or(false))
+        {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn is_matching_exe_name(actual_name: &str, target_name: &str) -> bool {
     let clean_actual = actual_name.strip_suffix(".exe").unwrap_or(actual_name);
     let clean_target = target_name.strip_suffix(".exe").unwrap_or(target_name);
     clean_actual == clean_target
+        || clean_actual.replace('-', " ") == clean_target.replace('-', " ")
         || matches!(
             (clean_actual, clean_target),
             ("chatgpt", "chatgpt-desktop")
                 | ("chatgpt-desktop", "chatgpt")
+                | ("claude", "claude-desktop")
+                | ("claude-desktop", "claude")
                 | ("gemini", "gemini-desktop")
                 | ("gemini-desktop", "gemini")
                 | ("factory", "factory-desktop")
@@ -242,6 +258,11 @@ pub fn inspect_app_state(sys: &System, spec: &TargetAppSpec, proxy: &ProxyConfig
         .and_then(|f| f.to_str())
         .unwrap_or("")
         .to_lowercase();
+    let raw_target_file_name = Path::new(&spec.exe_path)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("")
+        .to_lowercase();
 
     let mut all_candidate_pids = HashSet::new();
     let mut helper_pids = HashSet::new();
@@ -258,7 +279,12 @@ pub fn inspect_app_state(sys: &System, spec: &TargetAppSpec, proxy: &ProxyConfig
             } else if exe
                 .file_name()
                 .and_then(|f| f.to_str())
-                .map(|s| is_matching_exe_name(&s.to_lowercase(), &target_file_name))
+                .map(|s| {
+                    let s_low = s.to_lowercase();
+                    is_matching_exe_name(&s_low, &target_file_name)
+                        || (!raw_target_file_name.is_empty()
+                            && is_matching_exe_name(&s_low, &raw_target_file_name))
+                })
                 .unwrap_or(false)
             {
                 is_same_app_family(spec_path, &spec_path_norm, exe, &exe_norm)
@@ -266,7 +292,9 @@ pub fn inspect_app_state(sys: &System, spec: &TargetAppSpec, proxy: &ProxyConfig
                 false
             }
         } else {
-            let name_matches = is_matching_exe_name(&p_name, &target_file_name);
+            let name_matches = is_matching_exe_name(&p_name, &target_file_name)
+                || (!raw_target_file_name.is_empty()
+                    && is_matching_exe_name(&p_name, &raw_target_file_name));
             if name_matches {
                 if let Some(first_arg) = cmd.first() {
                     let cleaned_arg = first_arg.trim().trim_matches('"');
@@ -418,7 +446,7 @@ pub fn launch_target(spec: &TargetAppSpec, proxy: &ProxyConfig) -> Result<u32, S
     let resolved_exe = crate::platforms::resolve_executable_for_launch(&spec.exe_path);
     let mut cmd = Command::new(&resolved_exe);
     let exe_low = resolved_exe.replace('/', "\\").to_lowercase();
-    if !exe_low.contains("\\microsoft\\windowsapps\\") {
+    if !exe_low.contains("\\windowsapps\\") {
         if let Some(parent) = Path::new(&resolved_exe).parent() {
             if parent.is_dir() {
                 cmd.current_dir(parent);
@@ -430,40 +458,83 @@ pub fn launch_target(spec: &TargetAppSpec, proxy: &ProxyConfig) -> Result<u32, S
         sync_gemini_profile_proxy(proxy, spec.proxy_enabled);
     }
 
+    let mut cli_args: Vec<String> = Vec::new();
+    let mut env_vars: Vec<(String, String)> = Vec::new();
     if spec.proxy_enabled {
         let proxy_url = proxy.url();
         let bypass_list = format_chromium_bypass_list(&proxy.no_proxy);
-        let no_proxy_env = format_no_proxy_env(&proxy.no_proxy);
 
         if spec.id != "gemini" {
-            cmd.arg(format!("--proxy-server={}", proxy_url));
-            cmd.arg(format!("--proxy-bypass-list={}", bypass_list));
+            let proxy_arg = format!("--proxy-server={}", proxy_url);
+            let bypass_arg = format!("--proxy-bypass-list={}", bypass_list);
+            cmd.arg(&proxy_arg);
+            cmd.arg(&bypass_arg);
+            cli_args.push(proxy_arg);
+            cli_args.push(bypass_arg);
         }
         cmd.arg("--disable-quic");
+        cli_args.push("--disable-quic".to_string());
 
-        cmd.env("HTTP_PROXY", &proxy_url);
-        cmd.env("HTTPS_PROXY", &proxy_url);
-        cmd.env("ALL_PROXY", &proxy_url);
-        cmd.env("NO_PROXY", &no_proxy_env);
-        cmd.env("http_proxy", &proxy_url);
-        cmd.env("https_proxy", &proxy_url);
-        cmd.env("all_proxy", &proxy_url);
-        cmd.env("no_proxy", &no_proxy_env);
-        cmd.env("NODE_USE_ENV_PROXY", "1");
+        env_vars = build_proxy_env_vars(proxy);
+        for (k, v) in &env_vars {
+            cmd.env(k, v);
+        }
     } else {
-        cmd.env_remove("HTTP_PROXY");
-        cmd.env_remove("HTTPS_PROXY");
-        cmd.env_remove("ALL_PROXY");
-        cmd.env_remove("NO_PROXY");
-        cmd.env_remove("http_proxy");
-        cmd.env_remove("https_proxy");
-        cmd.env_remove("all_proxy");
-        cmd.env_remove("no_proxy");
-        cmd.env_remove("NODE_USE_ENV_PROXY");
+        for &k in PROXY_ENV_KEYS {
+            cmd.env_remove(k);
+        }
     }
 
-    let child = cmd.spawn().map_err(|e| format!("Failed to spawn process: {}", e))?;
-    Ok(child.id())
+    match cmd.spawn() {
+        Ok(child) => Ok(child.id()),
+        Err(e) => {
+            #[cfg(target_os = "windows")]
+            {
+                let raw_err = e.raw_os_error();
+                let is_access_or_elevation = raw_err == Some(5)
+                    || raw_err == Some(740)
+                    || e.kind() == std::io::ErrorKind::PermissionDenied;
+                if is_access_or_elevation {
+                    // 1. Try MSIX ApplicationActivationManager COM activation (for Store / WindowsApps packages)
+                    if let Ok(pid) = crate::platforms::windows::activate_msix_application(
+                        &spec.id,
+                        &resolved_exe,
+                        &cli_args,
+                    )
+                    .or_else(|_| {
+                        crate::platforms::windows::activate_msix_application(
+                            &spec.id,
+                            &spec.exe_path,
+                            &cli_args,
+                        )
+                    }) {
+                        return Ok(pid);
+                    }
+
+                    // 2. Fallback to ShellExecuteExW for apps requiring UAC elevation (os error 740 / RunAsAdmin)
+                    // or shell-mediated execution (os error 5 on reparse points / protected launchers)
+                    let work_dir = if !exe_low.contains("\\windowsapps\\") {
+                        Path::new(&resolved_exe)
+                            .parent()
+                            .filter(|p| p.is_dir())
+                            .map(|p| p.to_string_lossy().to_string())
+                    } else {
+                        None
+                    };
+                    if let Ok(pid) = crate::platforms::windows::shell_execute_application(
+                        &resolved_exe,
+                        &cli_args,
+                        work_dir.as_deref(),
+                        &env_vars,
+                        spec.proxy_enabled,
+                    ) {
+                        return Ok(pid);
+                    }
+                }
+            }
+            Err(format!("Failed to spawn process: {}", e))
+        }
+    }
 }
 
 pub fn stop_target(sys: &System, pids: &[u32], force: bool) -> Result<(), String> {
@@ -527,4 +598,22 @@ pub fn ensure_stopped_before_relaunch(pids: &[u32], allow_force_kill: bool) -> b
     }
     std::thread::sleep(std::time::Duration::from_millis(300));
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_versioned_package_path() {
+        assert!(is_versioned_package_path(
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_26.1027.3384.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe"
+        ));
+        assert!(is_versioned_package_path(
+            r"C:\Users\apuser\AppData\Local\AnthropicClaude\app-0.7.8\Claude.exe"
+        ));
+        assert!(!is_versioned_package_path(
+            r"C:\Users\apuser\AppData\Local\Microsoft\WindowsApps\chatgpt-desktop.exe"
+        ));
+    }
 }

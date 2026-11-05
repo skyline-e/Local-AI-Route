@@ -6,11 +6,9 @@ pub mod platforms;
 use commands::AppState;
 use core::controller::{
     ensure_stopped_before_relaunch, inspect_app_state, launch_target, refresh_processes_for_inspection,
-    should_heal_builtin_path,
 };
-use core::models::{RunStatus, TargetOverride};
-use core::presets::find_target_spec;
-use core::storage::{load_settings, save_settings};
+use core::models::RunStatus;
+use core::storage::load_settings;
 use std::sync::Mutex;
 use sysinfo::System;
 use tauri::menu::{Menu, MenuItem};
@@ -54,20 +52,7 @@ pub fn run() {
 
     // If --launch <app_id> was requested via CLI / desktop shortcut
     if let Some(target_id) = launch_target_id {
-        if let Some(mut target) = find_target_spec(&initial_settings, &target_id) {
-            if target.builtin && should_heal_builtin_path(&target.exe_path) {
-                if let Some(detected) = crate::platforms::discover_target_executable(&target.id) {
-                    if target.exe_path != detected {
-                        target.exe_path = detected.clone();
-                        let entry = initial_settings
-                            .targets
-                            .entry(target.id.clone())
-                            .or_insert_with(TargetOverride::default);
-                        entry.exe_path = detected;
-                        let _ = save_settings(&initial_settings);
-                    }
-                }
-            }
+        if let Ok(target) = commands::resolve_and_heal_target(&mut initial_settings, &target_id) {
             let is_en = initial_settings.language == "en-US";
             let app_name = if is_en && !target.name_en.is_empty() {
                 &target.name_en

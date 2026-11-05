@@ -1,7 +1,35 @@
-use super::models::DEFAULT_NO_PROXY;
+use super::models::{ProxyConfig, DEFAULT_NO_PROXY};
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::time::Duration;
+
+pub const PROXY_ENV_KEYS: &[&str] = &[
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "NODE_USE_ENV_PROXY",
+];
+
+pub fn build_proxy_env_vars(proxy: &ProxyConfig) -> Vec<(String, String)> {
+    let proxy_url = proxy.url();
+    let no_proxy_env = format_no_proxy_env(&proxy.no_proxy);
+    vec![
+        ("HTTP_PROXY".into(), proxy_url.clone()),
+        ("HTTPS_PROXY".into(), proxy_url.clone()),
+        ("ALL_PROXY".into(), proxy_url.clone()),
+        ("NO_PROXY".into(), no_proxy_env.clone()),
+        ("http_proxy".into(), proxy_url.clone()),
+        ("https_proxy".into(), proxy_url.clone()),
+        ("all_proxy".into(), proxy_url),
+        ("no_proxy".into(), no_proxy_env),
+        ("NODE_USE_ENV_PROXY".into(), "1".into()),
+    ]
+}
 
 pub fn split_bypass_entries(raw: &str) -> Vec<String> {
     if raw.trim().is_empty() {
