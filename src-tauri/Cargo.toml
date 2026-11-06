@@ -1,6 +1,6 @@
 [package]
 name = "local-ai-route"
-version = "0.2.6"
+version = "0.2.7"
 description = "Process-scoped local proxy launcher and connection diagnostics for AI desktop apps"
 authors = ["Local-AI-Route Team"]
 edition = "2021"

@@ -27,13 +27,29 @@ fn get_oauth_client_secret() -> String {
 
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 
+/// 官方 Antigravity IDE language_server 使用的 User-Agent。
+/// 注意：`v1internal:retrieveUserQuotaSummary` 接口校验客户端标识（`aidev_client` 与 `cl` 版本号），
+/// 若使用非官方 UA（如 `antigravity-cli/1.0`），后端会省略 `Gemini Models` 配额分组。
+const OFFICIAL_USER_AGENT: &str =
+    "antigravity/1.11.0 (aidev_client; os_type=windows; arch=amd64; cl=1013060670)";
+
+const QUOTA_SUMMARY_ENDPOINTS: [&str; 3] = [
+    "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+    "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+    "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:retrieveUserQuotaSummary",
+];
+
 const QUOTA_API_ENDPOINTS: [&str; 3] = [
     "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
     "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
     "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:fetchAvailableModels",
 ];
 
-const LOAD_CODE_ASSIST_ENDPOINT: &str = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
+const LOAD_CODE_ASSIST_ENDPOINTS: [&str; 3] = [
+    "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+    "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+    "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:loadCodeAssist",
+];
 
 pub fn get_cli_token_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
@@ -254,6 +270,29 @@ pub async fn ensure_fresh_access_token(
 }
 
 #[derive(Debug, Deserialize)]
+struct QuotaSummaryResponse {
+    groups: Option<Vec<QuotaSummaryGroup>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct QuotaSummaryGroup {
+    #[serde(rename = "displayName")]
+    display_name: Option<String>,
+    buckets: Option<Vec<QuotaSummaryBucket>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct QuotaSummaryBucket {
+    #[serde(rename = "bucketId")]
+    bucket_id: Option<String>,
+    window: Option<String>,
+    #[serde(rename = "resetTime")]
+    reset_time: Option<String>,
+    #[serde(rename = "remainingFraction")]
+    remaining_fraction: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct QuotaResponse {
     models: Option<HashMap<String, ModelInfo>>,
 }
@@ -272,6 +311,418 @@ struct QuotaInfoItem {
     remaining_fraction: Option<f64>,
     #[serde(rename = "resetTime")]
     reset_time: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ModelLimitEntry {
+    remaining_fraction: f64,
+    resets_at: Option<String>,
+    reset_in_seconds: Option<i64>,
+}
+
+fn parse_reset_time(rt_opt: Option<&str>, now: DateTime<Utc>) -> (Option<String>, Option<i64>) {
+    if let Some(rt) = rt_opt {
+        if let Ok(dt) = DateTime::parse_from_rfc3339(rt) {
+            let diff = dt.with_timezone(&Utc) - now;
+            let s = diff.num_seconds().max(0);
+            let local_time = dt.with_timezone(&chrono::Local);
+            let formatted = local_time.format("%Y-%m-%d %H:%M:%S").to_string();
+            return (Some(formatted), Some(s));
+        }
+    }
+    (None, None)
+}
+
+/// 解析剩余额度比例。
+/// Proto3 在序列化 JSON 时会省略默认值 0.0 的 `remainingFraction` 字段；
+/// 因此当 `remainingFraction` 为 `None` 且存在 `resetTime` 时，说明额度已耗尽（0.0），
+/// 当两者均为 `None` 时，说明该配额窗口尚未触发限流（1.0）。
+fn resolve_remaining_fraction(remaining_fraction: Option<f64>, reset_time: Option<&str>) -> f64 {
+    match remaining_fraction {
+        Some(v) => v.clamp(0.0, 1.0),
+        None if reset_time.is_some() => 0.0,
+        None => 1.0,
+    }
+}
+
+/// 将剩余比例（0.0..=1.0）按官方 Usage 面板规则四舍五入为整数百分比（0.0..=100.0）。
+fn round_quota_percent(remaining_fraction: f64) -> (f64, f64) {
+    let rem = (remaining_fraction * 100.0).round().clamp(0.0, 100.0);
+    let used = (100.0 - rem).clamp(0.0, 100.0);
+    (rem, used)
+}
+
+/// 当同一配额池存在多个子窗口或模型时，取剩余比例最小（最受限）的项；
+/// 若剩余比例相同，则优先保留包含有效或更晚重置时间的项。
+fn update_min_entry(target: &mut Option<ModelLimitEntry>, candidate: ModelLimitEntry) {
+    let should_replace = match target.as_ref() {
+        None => true,
+        Some(existing) => {
+            if candidate.remaining_fraction < existing.remaining_fraction - f64::EPSILON {
+                true
+            } else if (candidate.remaining_fraction - existing.remaining_fraction).abs()
+                <= f64::EPSILON
+            {
+                candidate.reset_in_seconds.unwrap_or(-1) > existing.reset_in_seconds.unwrap_or(-1)
+            } else {
+                false
+            }
+        }
+    };
+    if should_replace {
+        *target = Some(candidate);
+    }
+}
+
+#[derive(Default)]
+struct ParsedQuotaPools {
+    gemini_weekly: Option<ModelLimitEntry>,
+    gemini_5h: Option<ModelLimitEntry>,
+    claude_weekly: Option<ModelLimitEntry>,
+    claude_5h: Option<ModelLimitEntry>,
+    other_windows: Vec<QuotaWindow>,
+    has_gemini: bool,
+    has_claude_gpt: bool,
+}
+
+impl ParsedQuotaPools {
+    fn is_missing_any_main_pool(&self) -> bool {
+        self.gemini_weekly.is_none()
+            || self.gemini_5h.is_none()
+            || self.claude_weekly.is_none()
+            || self.claude_5h.is_none()
+    }
+
+    fn upsert_other_window(&mut self, candidate: QuotaWindow) {
+        if let Some(existing) = self
+            .other_windows
+            .iter_mut()
+            .find(|w| w.name == candidate.name)
+        {
+            let cand_rem = candidate.remaining_percent.unwrap_or(100.0);
+            let exist_rem = existing.remaining_percent.unwrap_or(100.0);
+            let should_replace = if cand_rem < exist_rem - f64::EPSILON {
+                true
+            } else if (cand_rem - exist_rem).abs() <= f64::EPSILON {
+                candidate.reset_in_seconds.unwrap_or(-1) > existing.reset_in_seconds.unwrap_or(-1)
+            } else {
+                false
+            };
+            if should_replace {
+                *existing = candidate;
+            }
+        } else {
+            self.other_windows.push(candidate);
+        }
+    }
+
+    fn apply_quota_summary(&mut self, summary_data: QuotaSummaryResponse, now: DateTime<Utc>) {
+        let Some(groups) = summary_data.groups else {
+            return;
+        };
+
+        for group in groups {
+            let raw_group_name = group.display_name.unwrap_or_default();
+            let group_name = raw_group_name.to_lowercase();
+            // 忽略内部实验性 Argon 分组，与官方 Usage 面板保持一致
+            if group_name.contains("argon") {
+                continue;
+            }
+            let Some(buckets) = group.buckets else {
+                continue;
+            };
+
+            for bucket in buckets {
+                let raw_bucket_id = bucket.bucket_id.unwrap_or_default();
+                let bucket_id = raw_bucket_id.to_lowercase();
+                if bucket_id.contains("argon") {
+                    continue;
+                }
+
+                let window = bucket.window.unwrap_or_default().to_lowercase();
+                let rem_frac =
+                    resolve_remaining_fraction(bucket.remaining_fraction, bucket.reset_time.as_deref());
+                let (resets_at, reset_sec) = parse_reset_time(bucket.reset_time.as_deref(), now);
+
+                let is_gemini = bucket_id.starts_with("gemini-") || group_name.contains("gemini");
+                let is_claude_gpt = bucket_id.starts_with("3p-")
+                    || group_name.contains("claude")
+                    || group_name.contains("gpt");
+
+                // 优先以显式的 window / bucket_id 后缀判定周期，仅在两者均未指明时用 reset_sec 兜底
+                let explicit_weekly = window == "weekly" || bucket_id.ends_with("-weekly");
+                let explicit_5h = window == "5h" || bucket_id.ends_with("-5h");
+                let is_weekly =
+                    explicit_weekly || (!explicit_5h && reset_sec.is_some_and(|s| s > 86400));
+                let is_5h =
+                    explicit_5h || (!explicit_weekly && reset_sec.is_some_and(|s| s <= 86400));
+
+                let entry = ModelLimitEntry {
+                    remaining_fraction: rem_frac,
+                    resets_at: resets_at.clone(),
+                    reset_in_seconds: reset_sec,
+                };
+
+                if is_gemini {
+                    self.has_gemini = true;
+                    if is_weekly {
+                        update_min_entry(&mut self.gemini_weekly, entry);
+                    } else if is_5h {
+                        update_min_entry(&mut self.gemini_5h, entry);
+                    }
+                } else if is_claude_gpt {
+                    self.has_claude_gpt = true;
+                    if is_weekly {
+                        update_min_entry(&mut self.claude_weekly, entry);
+                    } else if is_5h {
+                        update_min_entry(&mut self.claude_5h, entry);
+                    }
+                } else {
+                    let (rem_pct, used_pct) = round_quota_percent(rem_frac);
+                    let win_type_suffix = if is_weekly { "周用量限制" } else { "5小时速率" };
+                    let display = if !raw_group_name.is_empty() {
+                        raw_group_name.as_str()
+                    } else {
+                        raw_bucket_id.as_str()
+                    };
+                    self.upsert_other_window(QuotaWindow {
+                        name: format!("{} · {}", display, win_type_suffix),
+                        used_percent: Some(used_pct),
+                        remaining_percent: Some(rem_pct),
+                        resets_at,
+                        reset_in_seconds: reset_sec,
+                        detail: Some(format!("Bucket ID: {}", raw_bucket_id)),
+                    });
+                }
+            }
+        }
+    }
+
+    fn apply_available_models_fallback(&mut self, quota_data: QuotaResponse, now: DateTime<Utc>) {
+        let Some(models) = quota_data.models else {
+            return;
+        };
+
+        let mut fb_gemini_5h: Option<ModelLimitEntry> = None;
+        let mut fb_gemini_weekly: Option<ModelLimitEntry> = None;
+        let mut fb_claude_5h: Option<ModelLimitEntry> = None;
+        let mut fb_claude_weekly: Option<ModelLimitEntry> = None;
+
+        let mut sorted_keys: Vec<_> = models.keys().cloned().collect();
+        sorted_keys.sort();
+
+        for key in sorted_keys {
+            let key_lower = key.to_lowercase();
+            // 排除内部补全/对话后台模型及实验性 Argon 模型，保持与摘要接口一致
+            if key_lower.starts_with("chat_") || key_lower.starts_with("tab_") {
+                continue;
+            }
+
+            let info = &models[&key];
+            let display = info.display_name.clone().unwrap_or_else(|| key.clone());
+            if key_lower.contains("argon") || display.to_lowercase().contains("argon") {
+                continue;
+            }
+
+            let (rem_frac, formatted_resets, reset_sec) = if let Some(q) = &info.quota_info {
+                let rem = resolve_remaining_fraction(q.remaining_fraction, q.reset_time.as_deref());
+                let (formatted, sec) = parse_reset_time(q.reset_time.as_deref(), now);
+                (rem, formatted, sec)
+            } else {
+                (1.0, None, None)
+            };
+
+            let entry = ModelLimitEntry {
+                remaining_fraction: rem_frac,
+                resets_at: formatted_resets.clone(),
+                reset_in_seconds: reset_sec,
+            };
+
+            if key_lower.contains("gemini") {
+                self.has_gemini = true;
+                if let Some(sec) = reset_sec {
+                    if sec <= 86400 {
+                        update_min_entry(&mut fb_gemini_5h, entry);
+                    } else {
+                        update_min_entry(&mut fb_gemini_weekly, entry);
+                    }
+                } else {
+                    update_min_entry(&mut fb_gemini_5h, entry);
+                }
+            } else if key_lower.contains("claude") || key_lower.contains("gpt") {
+                self.has_claude_gpt = true;
+                if let Some(sec) = reset_sec {
+                    if sec <= 86400 {
+                        update_min_entry(&mut fb_claude_5h, entry);
+                    } else {
+                        update_min_entry(&mut fb_claude_weekly, entry);
+                    }
+                } else {
+                    update_min_entry(&mut fb_claude_weekly, entry);
+                }
+            } else {
+                let (rem_pct, used_pct) = round_quota_percent(rem_frac);
+                let win_type_suffix = if reset_sec.is_some_and(|s| s > 86400) {
+                    "周用量限制"
+                } else {
+                    "5小时速率"
+                };
+                self.upsert_other_window(QuotaWindow {
+                    name: format!("{} · {}", display, win_type_suffix),
+                    used_percent: Some(used_pct),
+                    remaining_percent: Some(rem_pct),
+                    resets_at: formatted_resets,
+                    reset_in_seconds: reset_sec,
+                    detail: Some(format!("Model ID: {}", key)),
+                });
+            }
+        }
+
+        if self.gemini_5h.is_none() {
+            self.gemini_5h = fb_gemini_5h;
+        }
+        if self.gemini_weekly.is_none() {
+            self.gemini_weekly = fb_gemini_weekly;
+        }
+        if self.claude_5h.is_none() {
+            self.claude_5h = fb_claude_5h;
+        }
+        if self.claude_weekly.is_none() {
+            self.claude_weekly = fb_claude_weekly;
+        }
+    }
+
+    fn into_windows(self) -> Vec<QuotaWindow> {
+        let mut windows = Vec::new();
+
+        // 1. 生成官方 Gemini Models 配额窗口
+        if self.has_gemini || self.gemini_weekly.is_some() || self.gemini_5h.is_some() {
+            let (rem_pct, used_pct, resets_at, reset_sec, detail) = if let Some(w) = self.gemini_weekly {
+                let (rem, used) = round_quota_percent(w.remaining_fraction);
+                (
+                    Some(rem),
+                    Some(used),
+                    w.resets_at,
+                    w.reset_in_seconds,
+                    "Gemini 深度思考与主力模型周总用量池",
+                )
+            } else {
+                (
+                    Some(100.0),
+                    Some(0.0),
+                    None,
+                    None,
+                    "Gemini 深度思考与主力模型周总用量池 (额度充足)",
+                )
+            };
+            windows.push(QuotaWindow {
+                name: "Gemini Models · 周用量限制".into(),
+                used_percent: used_pct,
+                remaining_percent: rem_pct,
+                resets_at,
+                reset_in_seconds: reset_sec,
+                detail: Some(detail.into()),
+            });
+
+            let (rem_pct, used_pct, resets_at, reset_sec, detail) = if let Some(w) = self.gemini_5h {
+                let (rem, used) = round_quota_percent(w.remaining_fraction);
+                (
+                    Some(rem),
+                    Some(used),
+                    w.resets_at,
+                    w.reset_in_seconds,
+                    "适用于 Gemini 2.5 Pro / Flash Lite / Flash 等全部 Gemini 模型",
+                )
+            } else {
+                (
+                    Some(100.0),
+                    Some(0.0),
+                    None,
+                    None,
+                    "适用于 Gemini 2.5 Pro / Flash 等全部 Gemini 模型 (速率充足)",
+                )
+            };
+            windows.push(QuotaWindow {
+                name: "Gemini Models · 5小时速率".into(),
+                used_percent: used_pct,
+                remaining_percent: rem_pct,
+                resets_at,
+                reset_in_seconds: reset_sec,
+                detail: Some(detail.into()),
+            });
+        }
+
+        // 2. 生成官方 Claude & GPT models 配额窗口
+        if self.has_claude_gpt || self.claude_weekly.is_some() || self.claude_5h.is_some() {
+            let (rem_pct, used_pct, resets_at, reset_sec, detail) = if let Some(w) = self.claude_weekly {
+                let (rem, used) = round_quota_percent(w.remaining_fraction);
+                (
+                    Some(rem),
+                    Some(used),
+                    w.resets_at,
+                    w.reset_in_seconds,
+                    "适用于 Claude Opus / Sonnet 及 GPT 等高阶模型",
+                )
+            } else {
+                (Some(100.0), Some(0.0), None, None, "高阶模型周总用量池 (额度充足)")
+            };
+            windows.push(QuotaWindow {
+                name: "Claude & GPT · 周用量限制".into(),
+                used_percent: used_pct,
+                remaining_percent: rem_pct,
+                resets_at,
+                reset_in_seconds: reset_sec,
+                detail: Some(detail.into()),
+            });
+
+            let (rem_pct, used_pct, resets_at, reset_sec, detail) = if let Some(w) = self.claude_5h {
+                let (rem, used) = round_quota_percent(w.remaining_fraction);
+                (
+                    Some(rem),
+                    Some(used),
+                    w.resets_at,
+                    w.reset_in_seconds,
+                    "Claude / GPT 短周期突发速率窗口",
+                )
+            } else {
+                (
+                    Some(100.0),
+                    Some(0.0),
+                    None,
+                    None,
+                    "Claude / GPT 短周期突发速率窗口 (未受限/充足)",
+                )
+            };
+            windows.push(QuotaWindow {
+                name: "Claude & GPT · 5小时速率".into(),
+                used_percent: used_pct,
+                remaining_percent: rem_pct,
+                resets_at,
+                reset_in_seconds: reset_sec,
+                detail: Some(detail.into()),
+            });
+        }
+
+        windows.extend(self.other_windows);
+        windows
+    }
+}
+
+async fn post_cloudcode_json(
+    client: &reqwest::Client,
+    url: &str,
+    access_token: &str,
+    body: &serde_json::Value,
+) -> Result<reqwest::Response, String> {
+    client
+        .post(url)
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {}", access_token))
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(reqwest::header::USER_AGENT, OFFICIAL_USER_AGENT)
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| format!("Request to {} failed: {}", url, e))
 }
 
 pub async fn query_quota(
@@ -308,223 +759,24 @@ pub async fn query_quota(
         }
     }
 
-    // 1. Fetch available models and quotas
-    let mut windows = Vec::new();
+    // 1. Fetch Subscription tier and companion project ID via loadCodeAssist
     let mut plan_type = None;
+    let mut companion_project: Option<String> = None;
+    let load_body = json!({"metadata": {"ideType": "ANTIGRAVITY"}});
 
-    for ep in &QUOTA_API_ENDPOINTS {
-        let resp = client
-            .post(*ep)
-            .header(reqwest::header::AUTHORIZATION, format!("Bearer {}", access_token))
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .header(reqwest::header::USER_AGENT, "antigravity-cli/1.0")
-            .json(&json!({}))
-            .send()
-            .await;
-
-        if let Ok(res) = resp {
+    for ep in &LOAD_CODE_ASSIST_ENDPOINTS {
+        if let Ok(res) = post_cloudcode_json(&client, ep, &access_token, &load_body).await {
             if res.status().is_success() {
-                if let Ok(quota_data) = res.json::<QuotaResponse>().await {
-                    if let Some(models) = quota_data.models {
-                        // Struct for internal model quota calculation
-                        struct ModelLimitEntry {
-                            remaining_fraction: f64,
-                            resets_at: Option<String>,
-                            reset_in_seconds: Option<i64>,
+                if let Ok(tier_data) = res.json::<serde_json::Value>().await {
+                    if let Some(paid_tier) = tier_data.get("paidTier").and_then(|t| t.get("name")).and_then(|n| n.as_str()) {
+                        plan_type = Some(paid_tier.to_string());
+                    } else if let Some(curr_tier) = tier_data.get("currentTier").and_then(|t| t.get("name")).and_then(|n| n.as_str()) {
+                        plan_type = Some(curr_tier.to_string());
+                    }
+                    if let Some(proj) = tier_data.get("cloudaicompanionProject").and_then(|p| p.as_str()) {
+                        if !proj.trim().is_empty() {
+                            companion_project = Some(proj.trim().to_string());
                         }
-
-                        let mut gemini_5h: Option<ModelLimitEntry> = None;
-                        let mut gemini_weekly: Option<ModelLimitEntry> = None;
-                        let mut claude_5h: Option<ModelLimitEntry> = None;
-                        let mut claude_weekly: Option<ModelLimitEntry> = None;
-                        let mut other_windows: Vec<QuotaWindow> = Vec::new();
-
-                        let mut has_gemini = false;
-                        let mut has_claude_gpt = false;
-
-                        let mut sorted_keys: Vec<_> = models.keys().cloned().collect();
-                        sorted_keys.sort();
-
-                        for key in sorted_keys {
-                            let key_lower = key.to_lowercase();
-                            // Exclude internal tab/chat background models
-                            if key_lower.starts_with("chat_") || key_lower.starts_with("tab_") {
-                                continue;
-                            }
-
-                            let info = &models[&key];
-                            let display = info.display_name.clone().unwrap_or_else(|| key.clone());
-
-                            let (rem_frac, formatted_resets, reset_sec) = if let Some(q) = &info.quota_info {
-                                let rem = q.remaining_fraction.unwrap_or(1.0);
-                                let mut sec = None;
-                                let mut formatted = None;
-                                if let Some(ref rt) = q.reset_time {
-                                    if let Ok(dt) = DateTime::parse_from_rfc3339(rt) {
-                                        let diff = dt.with_timezone(&Utc) - Utc::now();
-                                        let s = diff.num_seconds().max(0);
-                                        sec = Some(s);
-                                        let local_time = dt.with_timezone(&chrono::Local);
-                                        formatted = Some(local_time.format("%Y-%m-%d %H:%M:%S").to_string());
-                                    }
-                                }
-                                (rem, formatted, sec)
-                            } else {
-                                (1.0, None, None)
-                            };
-
-                            let is_argon = key_lower.contains("argon") || display.to_lowercase().contains("argon");
-
-                            if !is_argon && key_lower.contains("gemini") {
-                                has_gemini = true;
-                                if let Some(sec) = reset_sec {
-                                    if sec <= 86400 {
-                                        // 5-hour rolling limit window
-                                        if gemini_5h.as_ref().is_none_or(|e| rem_frac < e.remaining_fraction) {
-                                            gemini_5h = Some(ModelLimitEntry {
-                                                remaining_fraction: rem_frac,
-                                                resets_at: formatted_resets,
-                                                reset_in_seconds: Some(sec),
-                                            });
-                                        }
-                                    } else {
-                                        // Weekly limit window
-                                        if gemini_weekly.as_ref().is_none_or(|e| rem_frac < e.remaining_fraction) {
-                                            gemini_weekly = Some(ModelLimitEntry {
-                                                remaining_fraction: rem_frac,
-                                                resets_at: formatted_resets,
-                                                reset_in_seconds: Some(sec),
-                                            });
-                                        }
-                                    }
-                                } else if gemini_5h.as_ref().is_none_or(|e| rem_frac < e.remaining_fraction) {
-                                    gemini_5h = Some(ModelLimitEntry {
-                                        remaining_fraction: rem_frac,
-                                        resets_at: None,
-                                        reset_in_seconds: None,
-                                    });
-                                }
-                            } else if !is_argon && (key_lower.contains("claude") || key_lower.contains("gpt")) {
-                                has_claude_gpt = true;
-                                if let Some(sec) = reset_sec {
-                                    if sec <= 86400 {
-                                        // 5-hour rolling limit window
-                                        if claude_5h.as_ref().is_none_or(|e| rem_frac < e.remaining_fraction) {
-                                            claude_5h = Some(ModelLimitEntry {
-                                                remaining_fraction: rem_frac,
-                                                resets_at: formatted_resets,
-                                                reset_in_seconds: Some(sec),
-                                            });
-                                        }
-                                    } else {
-                                        // Weekly limit window
-                                        if claude_weekly.as_ref().is_none_or(|e| rem_frac < e.remaining_fraction) {
-                                            claude_weekly = Some(ModelLimitEntry {
-                                                remaining_fraction: rem_frac,
-                                                resets_at: formatted_resets,
-                                                reset_in_seconds: Some(sec),
-                                            });
-                                        }
-                                    }
-                                } else if claude_weekly.as_ref().is_none_or(|e| rem_frac < e.remaining_fraction) {
-                                    claude_weekly = Some(ModelLimitEntry {
-                                        remaining_fraction: rem_frac,
-                                        resets_at: None,
-                                        reset_in_seconds: None,
-                                    });
-                                }
-                            } else {
-                                // Specific model (such as Gemini 4 Argon or custom model)
-                                let rem_pct = (rem_frac * 100.0).clamp(0.0, 100.0);
-                                let used_pct = (100.0 - rem_pct).clamp(0.0, 100.0);
-                                let win_type_suffix = if reset_sec.is_some_and(|s| s > 86400) {
-                                    "周用量限制"
-                                } else {
-                                    "5小时速率"
-                                };
-                                other_windows.push(QuotaWindow {
-                                    name: format!("{} · {}", display, win_type_suffix),
-                                    used_percent: Some((used_pct * 10.0).round() / 10.0),
-                                    remaining_percent: Some((rem_pct * 10.0).round() / 10.0),
-                                    resets_at: formatted_resets,
-                                    reset_in_seconds: reset_sec,
-                                    detail: Some(format!("Model ID: {}", key)),
-                                });
-                            }
-                        }
-
-                        // Generate official Gemini Models quota pool windows (Image 3 layout)
-                        if has_gemini {
-                            // 1. Gemini Weekly limit
-                            let (rem_pct, used_pct, resets_at, reset_sec, detail) = if let Some(w) = gemini_weekly {
-                                let rem = (w.remaining_fraction * 100.0).clamp(0.0, 100.0);
-                                (Some((rem * 10.0).round() / 10.0), Some(((100.0 - rem) * 10.0).round() / 10.0), w.resets_at, w.reset_in_seconds, "Gemini 深度思考与主力模型周总用量池")
-                            } else {
-                                (Some(100.0), Some(0.0), None, None, "Gemini 深度思考与主力模型周总用量池 (额度充足)")
-                            };
-                            windows.push(QuotaWindow {
-                                name: "Gemini Models · 周用量限制".into(),
-                                used_percent: used_pct,
-                                remaining_percent: rem_pct,
-                                resets_at,
-                                reset_in_seconds: reset_sec,
-                                detail: Some(detail.into()),
-                            });
-
-                            // 2. Gemini 5h limit
-                            let (rem_pct, used_pct, resets_at, reset_sec, detail) = if let Some(w) = gemini_5h {
-                                let rem = (w.remaining_fraction * 100.0).clamp(0.0, 100.0);
-                                (Some((rem * 10.0).round() / 10.0), Some(((100.0 - rem) * 10.0).round() / 10.0), w.resets_at, w.reset_in_seconds, "适用于 Gemini 2.5 Pro / Flash Lite / Flash 等全部 Gemini 模型")
-                            } else {
-                                (Some(100.0), Some(0.0), None, None, "适用于 Gemini 2.5 Pro / Flash 等全部 Gemini 模型 (速率充足)")
-                            };
-                            windows.push(QuotaWindow {
-                                name: "Gemini Models · 5小时速率".into(),
-                                used_percent: used_pct,
-                                remaining_percent: rem_pct,
-                                resets_at,
-                                reset_in_seconds: reset_sec,
-                                detail: Some(detail.into()),
-                            });
-                        }
-
-                        // Generate official Claude & GPT models quota pool windows (Image 3 layout)
-                        if has_claude_gpt {
-                            // 1. Claude/GPT Weekly limit
-                            let (rem_pct, used_pct, resets_at, reset_sec, detail) = if let Some(w) = claude_weekly {
-                                let rem = (w.remaining_fraction * 100.0).clamp(0.0, 100.0);
-                                (Some((rem * 10.0).round() / 10.0), Some(((100.0 - rem) * 10.0).round() / 10.0), w.resets_at, w.reset_in_seconds, "适用于 Claude Opus 5.5 / Sonnet 5.5 及 GPT 等高阶模型")
-                            } else {
-                                (Some(100.0), Some(0.0), None, None, "高阶模型周总用量池 (额度充足)")
-                            };
-                            windows.push(QuotaWindow {
-                                name: "Claude & GPT · 周用量限制".into(),
-                                used_percent: used_pct,
-                                remaining_percent: rem_pct,
-                                resets_at,
-                                reset_in_seconds: reset_sec,
-                                detail: Some(detail.into()),
-                            });
-
-                            // 2. Claude/GPT 5h limit
-                            let (rem_pct, used_pct, resets_at, reset_sec, detail) = if let Some(w) = claude_5h {
-                                let rem = (w.remaining_fraction * 100.0).clamp(0.0, 100.0);
-                                (Some((rem * 10.0).round() / 10.0), Some(((100.0 - rem) * 10.0).round() / 10.0), w.resets_at, w.reset_in_seconds, "Claude / GPT 短周期突发速率窗口")
-                            } else {
-                                (Some(100.0), Some(0.0), None, None, "Claude / GPT 短周期突发速率窗口 (未受限/充足)")
-                            };
-                            windows.push(QuotaWindow {
-                                name: "Claude & GPT · 5小时速率".into(),
-                                used_percent: used_pct,
-                                remaining_percent: rem_pct,
-                                resets_at,
-                                reset_in_seconds: reset_sec,
-                                detail: Some(detail.into()),
-                            });
-                        }
-
-                        // Append any Argon or custom model windows
-                        windows.extend(other_windows);
                     }
                     break;
                 }
@@ -532,25 +784,65 @@ pub async fn query_quota(
         }
     }
 
-    // 2. Fetch Subscription tier via loadCodeAssist
-    let tier_res = client
-        .post(LOAD_CODE_ASSIST_ENDPOINT)
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {}", access_token))
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .header(reqwest::header::USER_AGENT, "antigravity-cli/1.0")
-        .json(&json!({"metadata": {"ideType": "ANTIGRAVITY"}}))
-        .send()
-        .await;
+    let now = Utc::now();
+    let mut pools = ParsedQuotaPools::default();
+    let mut last_error: Option<String> = None;
 
-    if let Ok(res) = tier_res {
-        if res.status().is_success() {
-            if let Ok(tier_data) = res.json::<serde_json::Value>().await {
-                if let Some(paid_tier) = tier_data.get("paidTier").and_then(|t| t.get("name")).and_then(|n| n.as_str()) {
-                    plan_type = Some(paid_tier.to_string());
-                } else if let Some(curr_tier) = tier_data.get("currentTier").and_then(|t| t.get("name")).and_then(|n| n.as_str()) {
-                    plan_type = Some(curr_tier.to_string());
+    // 2. Fetch official grouped quota summary (retrieveUserQuotaSummary) used by Antigravity IDE Usage panel
+    let summary_body = match &companion_project {
+        Some(proj) => json!({ "project": proj }),
+        None => json!({}),
+    };
+
+    for ep in &QUOTA_SUMMARY_ENDPOINTS {
+        match post_cloudcode_json(&client, ep, &access_token, &summary_body).await {
+            Ok(res) if res.status().is_success() => match res.json::<QuotaSummaryResponse>().await {
+                Ok(summary_data) if summary_data.groups.is_some() => {
+                    pools.apply_quota_summary(summary_data, now);
+                    break;
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    last_error = Some(format!("Failed to parse quota summary from {}: {}", ep, err));
+                }
+            },
+            Ok(res) => {
+                last_error = Some(format!("HTTP {} from {}", res.status(), ep));
+            }
+            Err(err) => {
+                last_error = Some(err);
+            }
+        }
+    }
+
+    // 3. Fallback / supplement via fetchAvailableModels if any main pool was not returned in retrieveUserQuotaSummary
+    if pools.is_missing_any_main_pool() {
+        for ep in &QUOTA_API_ENDPOINTS {
+            match post_cloudcode_json(&client, ep, &access_token, &summary_body).await {
+                Ok(res) if res.status().is_success() => match res.json::<QuotaResponse>().await {
+                    Ok(quota_data) if quota_data.models.is_some() => {
+                        pools.apply_available_models_fallback(quota_data, now);
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        last_error = Some(format!("Failed to parse available models from {}: {}", ep, err));
+                    }
+                },
+                Ok(res) => {
+                    last_error = Some(format!("HTTP {} from {}", res.status(), ep));
+                }
+                Err(err) => {
+                    last_error = Some(err);
                 }
             }
+        }
+    }
+
+    let windows = pools.into_windows();
+    if windows.is_empty() {
+        if let Some(err) = last_error {
+            return Err(format!("Failed to query Antigravity quota: {}", err));
         }
     }
 
@@ -569,6 +861,12 @@ pub async fn query_quota(
 mod tests {
     use super::*;
 
+    fn fixed_now() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-11-06T10:36:00Z")
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
     #[test]
     fn test_parse_email_from_token_object() {
         let payload = r#"{
@@ -582,5 +880,164 @@ mod tests {
         let email = parse_email_from_payload(payload);
         assert_eq!(email, Some("developer@example.com".to_string()));
     }
-}
 
+    #[test]
+    fn test_quota_summary_parsing_and_rounding() {
+        let raw_summary = r#"{
+            "groups": [
+                {
+                    "displayName": "Gemini Models",
+                    "buckets": [
+                        {
+                            "bucketId": "gemini-weekly",
+                            "window": "weekly",
+                            "resetTime": "2026-11-12T03:40:51Z",
+                            "remainingFraction": 0.6712
+                        },
+                        {
+                            "bucketId": "gemini-5h",
+                            "window": "5h",
+                            "resetTime": "2026-11-06T12:35:34Z",
+                            "remainingFraction": 0.996
+                        }
+                    ]
+                },
+                {
+                    "displayName": "Claude and GPT models",
+                    "buckets": [
+                        {
+                            "bucketId": "3p-weekly",
+                            "window": "weekly",
+                            "resetTime": "2026-11-13T10:38:40Z",
+                            "remainingFraction": 0.4681564
+                        },
+                        {
+                            "bucketId": "3p-5h",
+                            "window": "5h",
+                            "resetTime": "2026-11-06T15:38:40Z",
+                            "remainingFraction": 0
+                        }
+                    ]
+                },
+                {
+                    "displayName": "Gemini 4 Argon",
+                    "buckets": [
+                        {
+                            "bucketId": "gemini-argon-wtu-weekly",
+                            "window": "weekly",
+                            "resetTime": "2026-11-13T11:41:05Z",
+                            "remainingFraction": 1
+                        }
+                    ]
+                }
+            ]
+        }"#;
+
+        let now = fixed_now();
+        let summary: QuotaSummaryResponse = serde_json::from_str(raw_summary).unwrap();
+        let mut pools = ParsedQuotaPools::default();
+        pools.apply_quota_summary(summary, now);
+        assert!(!pools.is_missing_any_main_pool());
+
+        let windows = pools.into_windows();
+        assert_eq!(windows.len(), 4);
+        assert_eq!(windows[0].name, "Gemini Models · 周用量限制");
+        assert_eq!(windows[0].remaining_percent, Some(67.0));
+        assert_eq!(windows[0].used_percent, Some(33.0));
+        assert_eq!(windows[0].reset_in_seconds, Some(493491));
+
+        assert_eq!(windows[1].name, "Gemini Models · 5小时速率");
+        assert_eq!(windows[1].remaining_percent, Some(100.0));
+        assert_eq!(windows[1].used_percent, Some(0.0));
+        assert_eq!(windows[1].reset_in_seconds, Some(7174));
+
+        assert_eq!(windows[2].name, "Claude & GPT · 周用量限制");
+        assert_eq!(windows[2].remaining_percent, Some(47.0));
+        assert_eq!(windows[2].used_percent, Some(53.0));
+        assert_eq!(windows[2].reset_in_seconds, Some(604960));
+
+        assert_eq!(windows[3].name, "Claude & GPT · 5小时速率");
+        assert_eq!(windows[3].remaining_percent, Some(0.0));
+        assert_eq!(windows[3].used_percent, Some(100.0));
+        assert_eq!(windows[3].reset_in_seconds, Some(18160));
+    }
+
+    #[test]
+    fn test_fallback_handles_proto3_omitted_zero_and_preserves_summary_pools() {
+        let raw_summary = r#"{
+            "groups": [
+                {
+                    "displayName": "Claude and GPT models",
+                    "buckets": [
+                        {
+                            "bucketId": "3p-weekly",
+                            "window": "weekly",
+                            "resetTime": "2026-11-13T10:38:40Z",
+                            "remainingFraction": 0.47
+                        }
+                    ]
+                }
+            ]
+        }"#;
+        let raw_models = r#"{
+            "models": {
+                "claude-sonnet-4-6": {
+                    "displayName": "Claude Sonnet 4.6",
+                    "quotaInfo": {
+                        "resetTime": "2026-11-06T15:38:40Z"
+                    }
+                },
+                "gemini-3-pro-high": {
+                    "displayName": "Gemini 3.1 Pro (High)",
+                    "quotaInfo": {
+                        "remainingFraction": 0.996,
+                        "resetTime": "2026-11-06T12:35:34Z"
+                    }
+                }
+            }
+        }"#;
+
+        let now = fixed_now();
+        let summary: QuotaSummaryResponse = serde_json::from_str(raw_summary).unwrap();
+        let models: QuotaResponse = serde_json::from_str(raw_models).unwrap();
+
+        let mut pools = ParsedQuotaPools::default();
+        pools.apply_quota_summary(summary, now);
+        assert!(pools.is_missing_any_main_pool());
+        pools.apply_available_models_fallback(models, now);
+
+        let windows = pools.into_windows();
+        assert_eq!(windows.len(), 4);
+        assert_eq!(windows[0].remaining_percent, Some(100.0));
+        assert_eq!(windows[1].remaining_percent, Some(100.0));
+        assert_eq!(windows[1].reset_in_seconds, Some(7174));
+        // Claude 周限额保留自 summary (47%)，5h 限额由 fallback 补齐且识别 proto3 缺省 0%
+        assert_eq!(windows[2].remaining_percent, Some(47.0));
+        assert_eq!(windows[2].reset_in_seconds, Some(604960));
+        assert_eq!(windows[3].remaining_percent, Some(0.0));
+        assert_eq!(windows[3].used_percent, Some(100.0));
+        assert_eq!(windows[3].reset_in_seconds, Some(18160));
+    }
+
+    #[test]
+    fn test_tie_breaking_prefers_longer_reset_time() {
+        let mut target: Option<ModelLimitEntry> = None;
+        update_min_entry(
+            &mut target,
+            ModelLimitEntry {
+                remaining_fraction: 0.0,
+                resets_at: None,
+                reset_in_seconds: None,
+            },
+        );
+        update_min_entry(
+            &mut target,
+            ModelLimitEntry {
+                remaining_fraction: 0.0,
+                resets_at: Some("2026-11-06 23:38:40".into()),
+                reset_in_seconds: Some(18160),
+            },
+        );
+        assert_eq!(target.as_ref().and_then(|e| e.reset_in_seconds), Some(18160));
+    }
+}
