@@ -22,7 +22,7 @@ pub fn discover_target_executable(app_id: &str) -> Option<String> {
         "gemini" => &["gemini", "gemini-desktop", "google-gemini"],
         "antigravity-app" => &["antigravity", "antigravity-desktop"],
         "antigravity-ide" => &["antigravity-ide", "antigravity_ide"],
-        "factory" => &["factory", "factory-desktop", "droid"],
+        "factory" => &["factory-desktop", "factory"],
         _ => return None,
     };
 
@@ -67,7 +67,7 @@ pub fn discover_target_executable(app_id: &str) -> Option<String> {
         "gemini" => &["Gemini", "gemini", "gemini-desktop", "Google Gemini"],
         "antigravity-app" => &["Antigravity", "antigravity"],
         "antigravity-ide" => &["AntigravityIDE", "antigravity-ide", "antigravity_ide"],
-        "factory" => &["Factory", "factory", "droid"],
+        "factory" => &["Factory", "factory-desktop", "factory"],
         _ => &[],
     };
 

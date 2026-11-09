@@ -25,6 +25,7 @@ pub fn resolve_executable_for_launch(path_str: &str) -> String {
         // 1. Try finding squirrel app-* latest exe (known names first, then any main exe inside app-*)
         if let Some(sq) = find_latest_squirrel_exe(p, "Gemini.exe")
             .or_else(|| find_latest_squirrel_exe(p, "Claude.exe"))
+            .or_else(|| find_latest_squirrel_exe(p, "factory-desktop.exe"))
             .or_else(|| find_latest_squirrel_exe(p, "Factory.exe"))
             .or_else(|| find_latest_any_squirrel_exe(p))
         {
@@ -76,14 +77,18 @@ pub fn resolve_executable_for_launch(path_str: &str) -> String {
                 // 若配置了 Squirrel 的版本化子目录（如 app-1.0.0\App.exe），自动解析到最新版本的 app-*\App.exe，
                 // 防止应用自动更新并清理旧版本目录后启动失败。
                 if let Some(squirrel_root) = parent.parent() {
-                    if let Some(latest) = find_latest_squirrel_exe(squirrel_root, fname) {
+                    if let Some(latest) = find_latest_squirrel_exe(squirrel_root, fname)
+                        .or_else(|| find_latest_any_squirrel_exe(squirrel_root))
+                    {
                         return latest;
                     }
                 }
             } else if p.is_file() {
                 // 若用户选中或配置了 Squirrel 根目录启动桩（如 %LOCALAPPDATA%\Google\Gemini\Gemini.exe 约400KB），
                 // 自动重定向至 app-*\ 子目录下的真实 Electron 运行实体（约240MB），确保命令行参数与环境直达注入。
-                if let Some(latest) = find_latest_squirrel_exe(parent, fname) {
+                if let Some(latest) = find_latest_squirrel_exe(parent, fname)
+                    .or_else(|| find_latest_any_squirrel_exe(parent))
+                {
                     return latest;
                 }
             }
@@ -319,16 +324,24 @@ fn discover_target_executable_raw(app_id: &str) -> Option<String> {
             }
         }
         "factory" => {
-            // 1. Check %LOCALAPPDATA%\Programs\Factory\Factory.exe and variants
+            // 1. Check Squirrel install in %LOCALAPPDATA%\Factory\app-*\factory-desktop.exe (and Factory.exe)
             if !local_app_data.is_empty() {
                 let factory_root = Path::new(&local_app_data).join("Factory");
-                if let Some(found) = find_latest_squirrel_exe(&factory_root, "Factory.exe") {
+                if let Some(found) = find_latest_squirrel_exe(&factory_root, "factory-desktop.exe")
+                    .or_else(|| find_latest_squirrel_exe(&factory_root, "Factory.exe"))
+                    .or_else(|| find_latest_any_squirrel_exe(&factory_root))
+                {
                     return Some(found);
                 }
                 for sub in &[
-                    r"Programs\Factory\Factory.exe",
+                    r"Factory\factory-desktop.exe",
                     r"Factory\Factory.exe",
+                    r"Programs\Factory\factory-desktop.exe",
+                    r"Programs\Factory\Factory.exe",
+                    r"Programs\Factory Desktop\factory-desktop.exe",
                     r"Programs\Factory Desktop\Factory.exe",
+                    r"Programs\factory-desktop\factory-desktop.exe",
+                    r"Programs\FactoryAI\factory-desktop.exe",
                     r"Programs\FactoryAI\Factory.exe",
                 ] {
                     let candidate = Path::new(&local_app_data).join(sub);
@@ -344,8 +357,11 @@ fn discover_target_executable_raw(app_id: &str) -> Option<String> {
                     continue;
                 }
                 for sub in &[
+                    r"Factory\factory-desktop.exe",
                     r"Factory\Factory.exe",
+                    r"Factory Desktop\factory-desktop.exe",
                     r"Factory Desktop\Factory.exe",
+                    r"Programs\Factory\factory-desktop.exe",
                     r"Programs\Factory\Factory.exe",
                 ] {
                     let candidate = Path::new(base).join(sub);
@@ -356,29 +372,16 @@ fn discover_target_executable_raw(app_id: &str) -> Option<String> {
             }
 
             // 3. Check Uninstall registry
-            if let Some(path) = search_uninstall_registry("factory", false, "Factory.exe") {
+            if let Some(path) = search_uninstall_registry("factory", false, "factory-desktop.exe")
+                .or_else(|| search_uninstall_registry("factory", false, "Factory.exe"))
+            {
                 return Some(path);
             }
 
-            // 4. Check user bin directory for droid.exe
-            if let Some(user_home) = dirs::home_dir() {
-                for sub in &[
-                    r"bin\droid.exe",
-                    r".local\bin\droid.exe",
-                    r".factory\bin\droid.exe",
-                    r"AppData\Local\dsw\bin\dsw.exe",
-                ] {
-                    let candidate = user_home.join(sub);
-                    if candidate.is_file() {
-                        return Some(candidate.to_string_lossy().to_string());
-                    }
-                }
-            }
-
-            // 5. Check PATH for Factory.exe or droid.exe
+            // 4. Check PATH for Factory Desktop executable only (do not match CLI droid.exe / dsw.exe)
             if let Ok(path_var) = std::env::var("PATH") {
                 for dir in std::env::split_paths(&path_var) {
-                    for bin_name in &["Factory.exe", "droid.exe"] {
+                    for bin_name in &["factory-desktop.exe", "Factory.exe"] {
                         let candidate = dir.join(bin_name);
                         if is_executable_or_alias(&candidate) {
                             return Some(candidate.to_string_lossy().to_string());

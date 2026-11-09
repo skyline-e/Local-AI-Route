@@ -21,6 +21,20 @@ pub fn normalize_provider(app_id: &str) -> Option<&'static str> {
     }
 }
 
+fn is_matching_factory_account(profile: &AccountProfile, live_id: &factory::FactoryIdentity) -> bool {
+    if let (Some(a), Some(b)) = (&profile.email, &live_id.email) {
+        if a.eq_ignore_ascii_case(b) {
+            return true;
+        }
+    }
+    if let (Some(a), Some(b)) = (&profile.account_id, &live_id.subject) {
+        if a == b {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn build_http_client(proxy: Option<&ProxyConfig>, timeout_secs: u64) -> reqwest::Client {
     let mut builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(timeout_secs));
@@ -190,7 +204,7 @@ pub async fn import_current_account(
                 name: display_name,
                 email: identity.email.clone(),
                 account_id: identity.account_id.clone().or(identity.email.clone()),
-                plan_type: identity.plan_type.clone().or_else(|| quota.as_ref().and_then(|q| q.plan_type.clone())),
+                plan_type: quota.as_ref().and_then(|q| q.plan_type.clone()).or_else(|| identity.plan_type.clone()),
                 created_at: now_str.clone(),
                 last_used_at: Some(now_str),
                 is_active: true,
@@ -305,8 +319,69 @@ pub async fn import_current_account(
             Ok(profile)
         }
         "factory" => {
-            let bundle = factory::read_live_auth_bundle()?;
-            let identity = factory::parse_identity(&bundle.decrypted_json);
+            let mut bundle = factory::read_live_auth_bundle()?;
+            let prev_json = bundle.decrypted_json.clone();
+            let _ = factory::refresh_bundle_token(&mut bundle, proxy, false).await;
+            let mut identity = factory::parse_identity(&bundle.decrypted_json);
+
+            // Check if account already exists by email or subject ID
+            let existing_pos = existing.iter().position(|a| is_matching_factory_account(a, &identity));
+            if let Some(pos) = existing_pos {
+                let existing_id = existing[pos].id.clone();
+                for a in &mut existing {
+                    a.is_active = a.id == existing_id;
+                }
+                existing[pos].last_used_at = Some(now_str.clone());
+                let quota = factory::query_quota(&mut bundle, &existing_id, proxy).await.ok();
+                identity = factory::parse_identity(&bundle.decrypted_json);
+                factory::save_bundle_to_storage(provider, &existing_id, &bundle)?;
+                if bundle.decrypted_json != prev_json {
+                    let _ = factory::write_bundle_to_live(&bundle);
+                }
+                if let Some(ref q) = quota {
+                    existing[pos].quota = Some(q.clone());
+                    if q.plan_type.is_some() {
+                        existing[pos].plan_type = q.plan_type.clone();
+                    }
+                }
+                if existing[pos].email.is_none() && identity.email.is_some() {
+                    existing[pos].email = identity.email.clone();
+                }
+                let _ = storage::save_accounts(provider, &existing);
+                return Ok(existing[pos].clone());
+            }
+
+            let quota = factory::query_quota(&mut bundle, &account_id, proxy).await.ok();
+            // Re-parse identity in case query_quota refreshed an expired/empty access_token on 401
+            identity = factory::parse_identity(&bundle.decrypted_json);
+            if bundle.decrypted_json != prev_json {
+                let _ = factory::write_bundle_to_live(&bundle);
+            }
+
+            // Second-pass deduplication if email/subject only became available after 401 token refresh
+            if let Some(pos) = existing.iter().position(|a| is_matching_factory_account(a, &identity)) {
+                let existing_id = existing[pos].id.clone();
+                for a in &mut existing {
+                    a.is_active = a.id == existing_id;
+                }
+                existing[pos].last_used_at = Some(now_str.clone());
+                factory::save_bundle_to_storage(provider, &existing_id, &bundle)?;
+                if let Some(mut q) = quota {
+                    q.account_id = existing_id.clone();
+                    if q.plan_type.is_some() {
+                        existing[pos].plan_type = q.plan_type.clone();
+                    }
+                    existing[pos].quota = Some(q);
+                }
+                if existing[pos].email.is_none() && identity.email.is_some() {
+                    existing[pos].email = identity.email.clone();
+                }
+                let _ = storage::save_accounts(provider, &existing);
+                return Ok(existing[pos].clone());
+            }
+
+            factory::save_bundle_to_storage(provider, &account_id, &bundle)?;
+
             let display_name = custom_name.unwrap_or_else(|| {
                 if let Some(ref em) = identity.email {
                     em.split('@').next().unwrap_or("Factory Account").to_string()
@@ -314,29 +389,6 @@ pub async fn import_current_account(
                     "Factory Account".into()
                 }
             });
-
-            if let Some(ref em) = identity.email {
-                if let Some(pos) = existing.iter().position(|a| a.email.as_deref() == Some(em)) {
-                    let existing_id = existing[pos].id.clone();
-                    factory::save_bundle_to_storage(provider, &existing_id, &bundle)?;
-                    for a in &mut existing {
-                        a.is_active = a.id == existing_id;
-                    }
-                    existing[pos].last_used_at = Some(now_str.clone());
-                    let quota = factory::query_quota(&bundle, &existing_id, proxy).await.ok();
-                    if let Some(ref q) = quota {
-                        existing[pos].quota = Some(q.clone());
-                        if q.plan_type.is_some() {
-                            existing[pos].plan_type = q.plan_type.clone();
-                        }
-                    }
-                    let _ = storage::save_accounts(provider, &existing);
-                    return Ok(existing[pos].clone());
-                }
-            }
-
-            factory::save_bundle_to_storage(provider, &account_id, &bundle)?;
-            let quota = factory::query_quota(&bundle, &account_id, proxy).await.ok();
 
             for a in &mut existing {
                 a.is_active = false;
@@ -348,7 +400,7 @@ pub async fn import_current_account(
                 name: display_name,
                 email: identity.email.clone(),
                 account_id: identity.subject.clone().or_else(|| identity.email.clone()),
-                plan_type: identity.plan_type.clone().or_else(|| quota.as_ref().and_then(|q| q.plan_type.clone())),
+                plan_type: quota.as_ref().and_then(|q| q.plan_type.clone()).or_else(|| identity.plan_type.clone()),
                 created_at: now_str.clone(),
                 last_used_at: Some(now_str),
                 is_active: true,
@@ -507,11 +559,10 @@ pub async fn add_account_manual(
             Ok(profile)
         }
         "factory" => {
-            let bundle = factory::create_bundle_from_raw(raw_trimmed)?;
+            let mut bundle = factory::create_bundle_from_raw(raw_trimmed)?;
+            let quota = factory::query_quota(&mut bundle, &account_id, proxy).await.ok();
             let identity = factory::parse_identity(&bundle.decrypted_json);
-
             factory::save_bundle_to_storage(provider, &account_id, &bundle)?;
-            let quota = factory::query_quota(&bundle, &account_id, proxy).await.ok();
 
             let profile = AccountProfile {
                 id: account_id.clone(),
@@ -665,10 +716,13 @@ pub async fn switch_account(
             }
         }
         "factory" => {
-            // Save active files of previously active account if one exists
+            // Save active files of previously active account only if live ~/.factory still belongs to it
             if let Some(active_account) = accounts.iter().find(|a| a.is_active && a.id != account_id) {
                 if let Ok(live_bundle) = factory::read_live_auth_bundle() {
-                    let _ = factory::save_bundle_to_storage(provider, &active_account.id, &live_bundle);
+                    let live_id = factory::parse_identity(&live_bundle.decrypted_json);
+                    if is_matching_factory_account(active_account, &live_id) {
+                        let _ = factory::save_bundle_to_storage(provider, &active_account.id, &live_bundle);
+                    }
                 }
             }
 
@@ -764,14 +818,27 @@ pub async fn refresh_quota(
         }
         "factory" => {
             // If the target account is currently active, sync live files from ~/.factory back to storage
-            // to capture any refreshed access tokens updated in the background by Factory desktop app
+            // only if the live session still belongs to this account
+            let mut live_matches_target = false;
             if accounts[idx].is_active {
                 if let Ok(live_bundle) = factory::read_live_auth_bundle() {
-                    let _ = factory::save_bundle_to_storage(provider, &target_id, &live_bundle);
+                    let live_id = factory::parse_identity(&live_bundle.decrypted_json);
+                    if is_matching_factory_account(&accounts[idx], &live_id) {
+                        live_matches_target = true;
+                        let _ = factory::save_bundle_to_storage(provider, &target_id, &live_bundle);
+                    }
                 }
             }
-            let bundle = factory::load_bundle_from_storage(provider, &target_id)?;
-            factory::query_quota(&bundle, &target_id, proxy).await?
+            let mut bundle = factory::load_bundle_from_storage(provider, &target_id)?;
+            let prev_json = bundle.decrypted_json.clone();
+            let q = factory::query_quota(&mut bundle, &target_id, proxy).await?;
+            if bundle.decrypted_json != prev_json {
+                let _ = factory::save_bundle_to_storage(provider, &target_id, &bundle);
+                if accounts[idx].is_active && live_matches_target {
+                    let _ = factory::write_bundle_to_live(&bundle);
+                }
+            }
+            q
         }
         _ => return Err("Unsupported provider".into()),
     };
@@ -785,9 +852,10 @@ pub async fn refresh_quota(
         if accounts[idx].account_id.is_none() {
             accounts[idx].account_id = quota.email.clone();
         }
-        if accounts[idx].name == "Antigravity Account" {
+        if accounts[idx].name == "Antigravity Account" || accounts[idx].name == "Factory Account" {
             if let Some(ref em) = quota.email {
-                accounts[idx].name = em.split('@').next().unwrap_or("Antigravity Account").to_string();
+                let default_label = accounts[idx].name.as_str();
+                accounts[idx].name = em.split('@').next().unwrap_or(default_label).to_string();
             }
         }
     }

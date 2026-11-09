@@ -19,7 +19,25 @@ use std::path::PathBuf;
 type Aes256Gcm12 = AesGcm<Aes256, U12>;
 type Aes256Gcm16 = AesGcm<Aes256, U16>;
 
-pub const AUTH_FILES: &[&str] = &["auth.v2.file", "auth.v2.key", "auth.encrypted", "auth.v2.keyring"];
+pub const AUTH_FILES: &[&str] = &[
+    "auth.v2.file",
+    "auth.v2.key",
+    "auth.encrypted",
+    "auth.v2.keyring",
+    "auth.v2.loginkeychain",
+];
+
+const WORKOS_CLIENT_ID_PROD: &str = "client_01HNM792M5G5G1A2THWPXKFMXB";
+const WORKOS_AUTH_URL: &str = "https://api.workos.com/user_management/authenticate";
+const FACTORY_API_BASES: &[&str] = &["https://api.factory.ai", "https://app.factory.ai"];
+
+#[cfg(target_os = "windows")]
+const CRED_MGR_TARGETS: &[&str] = &[
+    "Factory CLI/auth-encryption-key",
+    "Factory CLI",
+    "Factory Desktop/auth-encryption-key",
+    "Factory/auth-encryption-key",
+];
 
 pub fn get_factory_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("FACTORY_DIR") {
@@ -79,6 +97,23 @@ struct JwtClaims {
     tier: Option<String>,
     subscription: Option<String>,
     name: Option<String>,
+}
+
+/// Maps internal Factory tier identifiers (`factoryTier`) to official UI display names.
+pub fn format_factory_tier(raw_tier: &str) -> String {
+    match raw_tier.trim().to_lowercase().as_str() {
+        "team" | "pro" => "Pro".to_string(),
+        "team_annual" | "pro_annual" => "Pro Annual".to_string(),
+        "pro_plus" | "plus" => "Plus".to_string(),
+        "max" => "Max".to_string(),
+        "ultra" => "Ultra".to_string(),
+        "teams" => "Teams".to_string(),
+        "payg" => "Enterprise (PAYG)".to_string(),
+        "business" => "Business".to_string(),
+        "enterprise" => "Enterprise".to_string(),
+        "free" | "starter" => "Free".to_string(),
+        _ => raw_tier.trim().to_string(),
+    }
 }
 
 pub fn decrypt_v2_payload(raw_file: &str, raw_key: &[u8]) -> Result<String, String> {
@@ -166,35 +201,117 @@ pub fn decode_jwt_claims(jwt: &str) -> Option<Value> {
 
 pub fn parse_identity(payload_json: &str) -> FactoryIdentity {
     let mut id = FactoryIdentity::default();
-    let payload: AuthPayload = match serde_json::from_str(payload_json) {
-        Ok(p) => p,
+    let payload_val: Value = match serde_json::from_str(payload_json) {
+        Ok(v) => v,
         Err(_) => return id,
     };
 
-    if let Some(claims_val) = decode_jwt_claims(&payload.access_token) {
-        if let Ok(claims) = serde_json::from_value::<JwtClaims>(claims_val.clone()) {
-            id.email = claims.email;
-            id.subject = claims.sub;
-            id.expires_at = claims.exp.and_then(|s| DateTime::from_timestamp(s, 0));
+    let access_token = payload_val
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
 
-            let raw_plan = claims.plan
-                .or(claims.plan_type)
-                .or(claims.tier)
-                .or(claims.subscription);
-            if let Some(p) = raw_plan {
-                let formatted = match p.to_lowercase().as_str() {
-                    "pro" => "Pro".to_string(),
-                    "plus" => "Plus".to_string(),
-                    "max" => "Max".to_string(),
-                    "team" | "teams" => "Team".to_string(),
-                    "enterprise" => "Enterprise".to_string(),
-                    _ => p,
-                };
-                id.plan_type = Some(formatted);
+    if !access_token.is_empty() {
+        if let Some(claims_val) = decode_jwt_claims(access_token) {
+            if let Ok(claims) = serde_json::from_value::<JwtClaims>(claims_val) {
+                id.email = claims.email;
+                id.subject = claims.sub;
+                id.expires_at = claims.exp.and_then(|s| DateTime::from_timestamp(s, 0));
+
+                let raw_plan = claims
+                    .plan
+                    .or(claims.plan_type)
+                    .or(claims.tier)
+                    .or(claims.subscription);
+                if let Some(p) = raw_plan {
+                    id.plan_type = Some(format_factory_tier(&p));
+                }
             }
         }
     }
+
+    // Fallback to cached whoami object in Factory Desktop auth payload if present
+    if let Some(whoami) = payload_val.get("whoami") {
+        if id.email.is_none() {
+            id.email = whoami
+                .get("email")
+                .or_else(|| whoami.pointer("/user/email"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+        }
+        if id.subject.is_none() {
+            id.subject = whoami
+                .get("userId")
+                .or_else(|| whoami.pointer("/user/id"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+        }
+        if id.plan_type.is_none() {
+            if let Some(tier) = whoami
+                .pointer("/organization/subscription/factoryTier")
+                .and_then(|v| v.as_str())
+            {
+                id.plan_type = Some(format_factory_tier(tier));
+            }
+        }
+    }
+
     id
+}
+
+fn resolve_v2_encryption_key(
+    files: &mut HashMap<String, Vec<u8>>,
+    factory_dir: Option<&PathBuf>,
+) -> Option<Vec<u8>> {
+    // 1. Check if auth.v2.key or auth.v2.loginkeychain is in files
+    for key_fname in &["auth.v2.key", "auth.v2.loginkeychain"] {
+        if let Some(k) = files.get(*key_fname) {
+            let key_str = String::from_utf8_lossy(k).trim().to_string();
+            if let Ok(decoded) = B64.decode(&key_str) {
+                if decoded.len() == 32 {
+                    return Some(decoded);
+                }
+            }
+            if k.len() == 32 {
+                return Some(k.clone());
+            }
+        }
+    }
+
+    // 2. Fallback to OS keyring (Windows Credential Manager) if key file is missing
+    #[cfg(target_os = "windows")]
+    {
+        for target_name in CRED_MGR_TARGETS {
+            if let Ok(blob) = crate::accounts::crypto::cred_mgr::read_credential(target_name) {
+                if blob.len() == 32 {
+                    let b64 = B64.encode(&blob);
+                    if let Some(dir) = factory_dir {
+                        let _ = fs::create_dir_all(dir);
+                        let _ = fs::write(dir.join("auth.v2.key"), &b64);
+                    }
+                    files.insert("auth.v2.key".to_string(), b64.into_bytes());
+                    return Some(blob);
+                } else if let Ok(s) = String::from_utf8(blob) {
+                    let trimmed = s.trim();
+                    if let Ok(decoded) = B64.decode(trimmed) {
+                        if decoded.len() == 32 {
+                            if let Some(dir) = factory_dir {
+                                let _ = fs::create_dir_all(dir);
+                                let _ = fs::write(dir.join("auth.v2.key"), trimmed);
+                            }
+                            files.insert("auth.v2.key".to_string(), trimmed.as_bytes().to_vec());
+                            return Some(decoded);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    let _ = factory_dir;
+
+    None
 }
 
 pub fn read_live_auth_bundle() -> Result<FactoryAuthBundle, String> {
@@ -214,55 +331,23 @@ pub fn read_live_auth_bundle() -> Result<FactoryAuthBundle, String> {
     }
 
     if files.is_empty() {
-        return Err(format!("未在 {} 中检测到 Factory 登录凭据，请先在 Factory Desktop 或 Droid 客户端中完成登录。", factory_dir.display()));
+        return Err(format!(
+            "未在 {} 中检测到 Factory 登录凭据，请先在 Factory Desktop 客户端中完成登录。",
+            factory_dir.display()
+        ));
     }
 
-    // Attempt decryption
     let mut decrypted_json: Option<String> = None;
+    let key_raw = resolve_v2_encryption_key(&mut files, Some(&factory_dir));
 
-    let v2_bytes_opt = files.get("auth.v2.file").cloned();
-    if let Some(v2_bytes) = v2_bytes_opt {
-        let v2_str = String::from_utf8_lossy(&v2_bytes).to_string();
-
-        // 1. Check if auth.v2.key is on disk
-        #[allow(unused_mut)]
-        let mut key_raw: Option<Vec<u8>> = files.get("auth.v2.key").and_then(|k| {
-            let key_str = String::from_utf8_lossy(k).trim().to_string();
-            B64.decode(key_str).ok()
-        });
-
-        // 2. Fallback to OS keyring (Windows Credential Manager) if auth.v2.key is missing
-        #[cfg(target_os = "windows")]
-        if key_raw.is_none() {
-            for target_name in &["Factory CLI/auth-encryption-key", "Factory CLI"] {
-                if let Ok(blob) = crate::accounts::crypto::cred_mgr::read_credential(target_name) {
-                    if blob.len() == 32 {
-                        // Persist to auth.v2.key for seamless portability
-                        let b64 = B64.encode(&blob);
-                        let _ = fs::create_dir_all(&factory_dir);
-                        let _ = fs::write(factory_dir.join("auth.v2.key"), &b64);
-                        files.insert("auth.v2.key".to_string(), b64.into_bytes());
-                        key_raw = Some(blob);
-                        break;
-                    } else if let Ok(s) = String::from_utf8(blob) {
-                        let trimmed = s.trim();
-                        if let Ok(decoded) = B64.decode(trimmed) {
-                            if decoded.len() == 32 {
-                                let _ = fs::create_dir_all(&factory_dir);
-                                let _ = fs::write(factory_dir.join("auth.v2.key"), trimmed);
-                                files.insert("auth.v2.key".to_string(), trimmed.as_bytes().to_vec());
-                                key_raw = Some(decoded);
-                                break;
-                            }
-                        }
-                    }
+    if let Some(ref key) = key_raw {
+        for enc_fname in &["auth.v2.file", "auth.v2.keyring"] {
+            if let Some(enc_bytes) = files.get(*enc_fname) {
+                let enc_str = String::from_utf8_lossy(enc_bytes);
+                if let Ok(decrypted) = decrypt_v2_payload(&enc_str, key) {
+                    decrypted_json = Some(decrypted);
+                    break;
                 }
-            }
-        }
-
-        if let Some(key) = key_raw {
-            if let Ok(decrypted) = decrypt_v2_payload(&v2_str, &key) {
-                decrypted_json = Some(decrypted);
             }
         }
     }
@@ -308,12 +393,13 @@ pub fn load_bundle_from_storage(provider: &str, account_id: &str) -> Result<Fact
     let decrypted_json = if let Ok(pbytes) = storage::read_account_data(provider, account_id, "payload.json") {
         String::from_utf8(pbytes).map_err(|e| e.to_string())?
     } else {
-        // Attempt decryption from saved files
-        let v2_bytes = files.get("auth.v2.file").ok_or_else(|| "auth.v2.file missing in saved account".to_string())?;
-        let key_bytes = files.get("auth.v2.key").ok_or_else(|| "auth.v2.key missing in saved account".to_string())?;
+        let key_raw = resolve_v2_encryption_key(&mut files, None)
+            .ok_or_else(|| "auth.v2.key missing in saved account".to_string())?;
+        let v2_bytes = files
+            .get("auth.v2.file")
+            .or_else(|| files.get("auth.v2.keyring"))
+            .ok_or_else(|| "auth.v2.file missing in saved account".to_string())?;
         let v2_str = String::from_utf8_lossy(v2_bytes);
-        let key_str = String::from_utf8_lossy(key_bytes).trim().to_string();
-        let key_raw = B64.decode(&key_str).map_err(|e| e.to_string())?;
         decrypt_v2_payload(&v2_str, &key_raw)?
     };
 
@@ -325,6 +411,10 @@ pub fn load_bundle_from_storage(provider: &str, account_id: &str) -> Result<Fact
 
 pub fn restore_bundle_to_live(provider: &str, account_id: &str) -> Result<(), String> {
     let bundle = load_bundle_from_storage(provider, account_id)?;
+    write_bundle_to_live(&bundle)
+}
+
+pub fn write_bundle_to_live(bundle: &FactoryAuthBundle) -> Result<(), String> {
     let factory_dir = get_factory_dir();
     fs::create_dir_all(&factory_dir).map_err(|e| format!("Failed to create Factory directory: {}", e))?;
 
@@ -366,7 +456,8 @@ pub fn create_bundle_from_raw(raw_content: &str) -> Result<FactoryAuthBundle, St
             serde_json::json!({
                 "access_token": val.get("token").and_then(|t| t.as_str()).unwrap_or(""),
                 "refresh_token": val.get("refresh_token").and_then(|r| r.as_str()).unwrap_or(""),
-            }).to_string()
+            })
+            .to_string()
         } else {
             val.to_string()
         }
@@ -375,7 +466,8 @@ pub fn create_bundle_from_raw(raw_content: &str) -> Result<FactoryAuthBundle, St
         serde_json::json!({
             "access_token": trimmed,
             "refresh_token": "",
-        }).to_string()
+        })
+        .to_string()
     };
 
     let (v2_file, v2_key) = encrypt_v2_payload(&auth_json_str, None)?;
@@ -390,19 +482,341 @@ pub fn create_bundle_from_raw(raw_content: &str) -> Result<FactoryAuthBundle, St
     })
 }
 
+fn update_bundle_with_new_tokens(
+    bundle: &mut FactoryAuthBundle,
+    new_access_token: &str,
+    new_refresh_token: Option<&str>,
+) -> Result<(), String> {
+    let mut root_val: Value = serde_json::from_str(&bundle.decrypted_json)
+        .unwrap_or_else(|_| serde_json::json!({}));
+
+    if let Some(obj) = root_val.as_object_mut() {
+        obj.insert("access_token".to_string(), Value::String(new_access_token.to_string()));
+        if let Some(rt) = new_refresh_token {
+            if !rt.is_empty() {
+                obj.insert("refresh_token".to_string(), Value::String(rt.to_string()));
+            }
+        }
+    }
+
+    let updated_json = serde_json::to_string(&root_val).map_err(|e| e.to_string())?;
+    let existing_key = resolve_v2_encryption_key(&mut bundle.files, None);
+
+    let (v2_file, v2_key) = encrypt_v2_payload(&updated_json, existing_key.as_deref())?;
+    bundle.decrypted_json = updated_json.clone();
+    bundle.files.insert("auth.v2.file".to_string(), v2_file.clone().into_bytes());
+    bundle.files.insert("auth.v2.key".to_string(), v2_key.clone().into_bytes());
+    if bundle.files.contains_key("auth.v2.loginkeychain") {
+        bundle.files.insert("auth.v2.loginkeychain".to_string(), v2_key.into_bytes());
+    }
+    if bundle.files.contains_key("auth.v2.keyring") {
+        bundle.files.insert("auth.v2.keyring".to_string(), v2_file.into_bytes());
+    }
+    if bundle.files.contains_key("auth.encrypted") {
+        bundle
+            .files
+            .insert("auth.encrypted".to_string(), updated_json.into_bytes());
+    }
+
+    Ok(())
+}
+
+/// Refreshes the Factory WorkOS access token using `refresh_token` when expired or forced.
+/// Returns `Ok(true)` if the token was refreshed and `bundle` was updated.
+pub async fn refresh_bundle_token(
+    bundle: &mut FactoryAuthBundle,
+    proxy: Option<&ProxyConfig>,
+    force: bool,
+) -> Result<bool, String> {
+    let root_val: Value = serde_json::from_str(&bundle.decrypted_json)
+        .map_err(|e| format!("Invalid Factory auth JSON: {}", e))?;
+
+    let access_token = root_val
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let refresh_token = root_val
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let now_ts = Utc::now().timestamp();
+    let mut needs_refresh = force || access_token.is_empty();
+    let mut client_id = WORKOS_CLIENT_ID_PROD.to_string();
+
+    if !access_token.is_empty() {
+        if let Some(claims) = decode_jwt_claims(access_token) {
+            if let Some(exp) = claims.get("exp").and_then(|v| v.as_i64()) {
+                // Refresh if token expires within 60 seconds
+                if exp <= now_ts + 60 {
+                    needs_refresh = true;
+                }
+            }
+            if let Some(cid) = claims
+                .get("client_id")
+                .and_then(|v| v.as_str())
+                .filter(|s| s.starts_with("client_"))
+            {
+                client_id = cid.to_string();
+            }
+        }
+    }
+
+    if !needs_refresh {
+        return Ok(false);
+    }
+
+    if refresh_token.is_empty() {
+        return Err("Factory access_token 已过期且未包含 refresh_token，无法自动刷新".into());
+    }
+
+    let org_id = root_val
+        .get("active_organization_id")
+        .and_then(|v| v.as_str())
+        .or_else(|| root_val.pointer("/whoami/orgId").and_then(|v| v.as_str()))
+        .unwrap_or("");
+
+    let mut form_params: Vec<(&str, &str)> = vec![
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh_token),
+        ("client_id", &client_id),
+    ];
+    if !org_id.is_empty() {
+        form_params.push(("organization_id", org_id));
+    }
+
+    let client = super::build_http_client(proxy, 10);
+    let resp = client
+        .post(WORKOS_AUTH_URL)
+        .header("User-Agent", "Factory Desktop")
+        .form(&form_params)
+        .send()
+        .await
+        .map_err(|e| format!("WorkOS token refresh request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("WorkOS token refresh failed ({}): {}", status, body));
+    }
+
+    let data: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Invalid JSON from WorkOS refresh: {}", e))?;
+
+    let new_at = data
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "WorkOS refresh response missing access_token".to_string())?;
+    let new_rt = data.get("refresh_token").and_then(|v| v.as_str());
+
+    update_bundle_with_new_tokens(bundle, new_at, new_rt)?;
+    Ok(true)
+}
+
+/// Parses a single Factory rate limit bucket (`fiveHour`, `weekly`, `monthly`),
+/// applying the same expiration semantics as Factory Desktop (`Sgt(bucket)` in `app.asar`).
+pub fn parse_rate_limit_bucket(
+    bucket: Option<&Value>,
+    now: DateTime<Utc>,
+) -> (f64, f64, Option<String>, Option<i64>) {
+    let Some(b) = bucket else {
+        return (0.0, 100.0, None, None);
+    };
+
+    let window_end_str = b.get("windowEnd").and_then(|v| v.as_str());
+    let window_end_dt = window_end_str.and_then(|s| DateTime::parse_from_rfc3339(s).ok()).map(|dt| dt.with_timezone(&Utc));
+
+    let sec_rem_opt = b
+        .get("secondsRemaining")
+        .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f.round() as i64)))
+        .or_else(|| window_end_dt.map(|dt| dt.timestamp() - now.timestamp()));
+
+    // A bucket is expired/inactive if windowEnd is null or secondsRemaining <= 0
+    let is_active = match (window_end_str, sec_rem_opt) {
+        (Some(_), Some(sec)) if sec > 0 => true,
+        _ => false,
+    };
+
+    if !is_active {
+        return (0.0, 100.0, None, None);
+    }
+
+    let raw_used = b
+        .get("usedPercent")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0)
+        .clamp(0.0, 100.0);
+    let used_pct = (raw_used * 10.0).round() / 10.0;
+    let rem_pct = ((100.0 - used_pct).clamp(0.0, 100.0) * 10.0).round() / 10.0;
+
+    let resets_at = window_end_dt
+        .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string());
+    let reset_in_seconds = sec_rem_opt.map(|s| s.max(0));
+
+    (used_pct, rem_pct, resets_at, reset_in_seconds)
+}
+
+async fn fetch_factory_endpoint(
+    client: &reqwest::Client,
+    access_token: &str,
+    path: &str,
+) -> Result<(reqwest::StatusCode, Option<Value>), String> {
+    let mut last_status = reqwest::StatusCode::INTERNAL_SERVER_ERROR;
+    let mut last_err = String::new();
+
+    for base in FACTORY_API_BASES {
+        let url = format!("{}{}", base, path);
+        match client
+            .get(&url)
+            .bearer_auth(access_token)
+            .header("User-Agent", "Factory Desktop")
+            .header("Accept", "application/json")
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status();
+                last_status = status;
+                if status.is_success() {
+                    if let Ok(val) = resp.json::<Value>().await {
+                        return Ok((status, Some(val)));
+                    }
+                } else if status == reqwest::StatusCode::UNAUTHORIZED {
+                    return Ok((status, None));
+                }
+            }
+            Err(e) => {
+                last_err = e.to_string();
+            }
+        }
+    }
+
+    if !last_err.is_empty() && last_status == reqwest::StatusCode::INTERNAL_SERVER_ERROR {
+        return Err(last_err);
+    }
+    Ok((last_status, None))
+}
+
 pub async fn query_quota(
-    bundle: &FactoryAuthBundle,
+    bundle: &mut FactoryAuthBundle,
     account_id: &str,
     proxy: Option<&ProxyConfig>,
 ) -> Result<AccountQuota, String> {
-    let identity = parse_identity(&bundle.decrypted_json);
+    // 1. Proactively refresh token if expired or expiring within 60s
+    let _ = refresh_bundle_token(bundle, proxy, false).await;
+
+    let mut identity = parse_identity(&bundle.decrypted_json);
     let now = Utc::now();
     let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     let mut windows = Vec::new();
     let mut extra_info = HashMap::new();
 
-    extra_info.insert("Provider".into(), "Factory Droid".into());
+    extra_info.insert("Provider".into(), "Factory Desktop".into());
+
+    let mut access_token = serde_json::from_str::<AuthPayload>(&bundle.decrypted_json)
+        .map(|p| p.access_token)
+        .unwrap_or_default();
+
+    let client = super::build_http_client(proxy, 8);
+    let mut limits_val: Option<Value> = None;
+    let mut org_val: Option<Value> = None;
+
+    if !access_token.is_empty() {
+        let (limits_res, org_res) = tokio::join!(
+            fetch_factory_endpoint(&client, &access_token, "/api/billing/limits"),
+            fetch_factory_endpoint(&client, &access_token, "/api/organization"),
+        );
+
+        let mut hit_unauthorized = false;
+        if let Ok((status, val_opt)) = limits_res {
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                hit_unauthorized = true;
+            } else {
+                limits_val = val_opt;
+            }
+        }
+        if let Ok((status, val_opt)) = org_res {
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                hit_unauthorized = true;
+            } else {
+                org_val = val_opt;
+            }
+        }
+
+        // Retry once concurrently with forced token refresh if either endpoint returned 401
+        if hit_unauthorized && refresh_bundle_token(bundle, proxy, true).await.unwrap_or(false) {
+            identity = parse_identity(&bundle.decrypted_json);
+            access_token = serde_json::from_str::<AuthPayload>(&bundle.decrypted_json)
+                .map(|p| p.access_token)
+                .unwrap_or_default();
+            let (retry_limits, retry_org) = tokio::join!(
+                fetch_factory_endpoint(&client, &access_token, "/api/billing/limits"),
+                fetch_factory_endpoint(&client, &access_token, "/api/organization"),
+            );
+            if let Ok((_, val_opt)) = retry_limits {
+                limits_val = val_opt;
+            }
+            if let Ok((_, val_opt)) = retry_org {
+                org_val = val_opt;
+            }
+        }
+    }
+
+    // Fallback to cached whoami.organization in bundle if offline
+    if org_val.is_none() {
+        if let Ok(root_val) = serde_json::from_str::<Value>(&bundle.decrypted_json) {
+            if let Some(cached_org) = root_val.pointer("/whoami/organization") {
+                org_val = Some(serde_json::json!({ "organization": cached_org }));
+            }
+        }
+    }
+
+    // 2. Parse Organization & Subscription details
+    let mut plan = identity.plan_type.clone().unwrap_or_else(|| "Pro".to_string());
+    if let Some(ref o_root) = org_val {
+        let org_obj = o_root.get("organization").unwrap_or(o_root);
+        if let Some(org_name) = org_obj.get("name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            extra_info.insert("Organization".into(), org_name.to_string());
+        }
+        if let Some(tier) = org_obj
+            .pointer("/subscription/factoryTier")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            plan = format_factory_tier(tier);
+        }
+        if let Some(orb) = org_obj.pointer("/subscription/orbSubscription") {
+            if let Some(sub_name) = orb.get("name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                extra_info.insert("Subscription Plan".into(), sub_name.to_string());
+            }
+            if let Some(status) = orb.get("status").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                extra_info.insert("Subscription Status".into(), status.to_string());
+            }
+            let period_end = orb
+                .get("current_billing_period_end_date")
+                .and_then(|v| v.as_str())
+                .or_else(|| orb.get("end_date").and_then(|v| v.as_str()));
+            if let Some(end_str) = period_end {
+                if let Ok(end_dt) = DateTime::parse_from_rfc3339(end_str) {
+                    let end_utc = end_dt.with_timezone(&Utc);
+                    let rem_sec = (end_utc.timestamp() - now.timestamp()).max(0);
+                    let is_expired = end_utc <= now;
+                    let local_str = end_utc.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string();
+                    extra_info.insert("subscription_expires_at".into(), local_str);
+                    extra_info.insert("subscription_sec_remaining".into(), rem_sec.to_string());
+                    extra_info.insert(
+                        "subscription_is_expired".into(),
+                        if is_expired { "true" } else { "false" }.into(),
+                    );
+                }
+            }
+        }
+    }
+
     if let Some(ref em) = identity.email {
         extra_info.insert("Email".into(), em.clone());
     }
@@ -410,7 +824,7 @@ pub async fn query_quota(
         extra_info.insert("Subject ID".into(), sub.clone());
     }
 
-    // 1. Session Token Expiry Window
+    // 3. Session Token Expiry Metadata
     if let Some(exp) = identity.expires_at {
         let exp_ts = exp.timestamp();
         let rem_sec = (exp_ts - now.timestamp()).max(0);
@@ -435,102 +849,93 @@ pub async fn query_quota(
         extra_info.insert("token_status".into(), detail_str);
     }
 
-    // 2. Factory Rolling Rate Limit Windows
-    // Factory documentation defines:
-    // - 5-Hour Rolling Limit (Standard Usage consumed first)
-    // - 7-Day Rolling Limit (Fallback to Droid Core open-weight models on exhaustion)
-    // - 30-Day Rolling Limit (Monthly subscription reset & Extra Usage buffer)
-    let plan = identity.plan_type.clone().unwrap_or_else(|| "Pro / Standard".to_string());
     extra_info.insert("Plan Tier".into(), plan.clone());
 
-    // Probe live Factory API endpoint if access token is available
-    let mut api_credit_info = None;
-    let mut user_profile_info = None;
+    // 4. Parse Usage Limits Windows (/api/billing/limits)
+    if let Some(ref lim_root) = limits_val {
+        let overage_pref = lim_root
+            .get("overagePreference")
+            .and_then(|v| v.as_str())
+            .unwrap_or("droidCore");
+        extra_info.insert("Overage Preference".into(), overage_pref.to_string());
 
-    if let Ok(auth_payload) = serde_json::from_str::<AuthPayload>(&bundle.decrypted_json) {
-        let client = super::build_http_client(proxy, 6);
+        if let Some(extra_cents) = lim_root.get("extraUsageBalanceCents").and_then(|v| v.as_i64()) {
+            extra_info.insert(
+                "Extra Usage Balance".into(),
+                format!("${:.2}", (extra_cents as f64) / 100.0),
+            );
+        }
 
-        // 1. Try Organization limits endpoint (for Team / Enterprise tiers)
-        let org_url = "https://api.factory.ai/api/v0/organization/usage/limits/users";
-        if let Ok(resp) = client.get(org_url)
-            .bearer_auth(&auth_payload.access_token)
-            .header("User-Agent", "Local-AI-Route/Factory-Client")
-            .send()
-            .await
-        {
-            if resp.status().is_success() {
-                if let Ok(val) = resp.json::<Value>().await {
-                    api_credit_info = Some(val);
+        let standard = lim_root.pointer("/limits/standard");
+        let (fh_used, fh_rem, fh_resets_at, fh_reset_sec) =
+            parse_rate_limit_bucket(standard.and_then(|s| s.get("fiveHour")), now);
+        let (wk_used, wk_rem, wk_resets_at, wk_reset_sec) =
+            parse_rate_limit_bucket(standard.and_then(|s| s.get("weekly")), now);
+        let (mo_used, mo_rem, mo_resets_at, mo_reset_sec) =
+            parse_rate_limit_bucket(standard.and_then(|s| s.get("monthly")), now);
+
+        windows.push(QuotaWindow {
+            name: "5-hour usage (5小时用量)".into(),
+            used_percent: Some(fh_used),
+            remaining_percent: Some(fh_rem),
+            resets_at: fh_resets_at,
+            reset_in_seconds: fh_reset_sec,
+            detail: Some(format!("{} · Standard 5小时滚动用量窗口", plan)),
+        });
+
+        windows.push(QuotaWindow {
+            name: "Weekly usage (周用量)".into(),
+            used_percent: Some(wk_used),
+            remaining_percent: Some(wk_rem),
+            resets_at: wk_resets_at,
+            reset_in_seconds: wk_reset_sec,
+            detail: Some(format!(
+                "{} · Standard 7天滚动用量窗口 (超额策略: {})",
+                plan, overage_pref
+            )),
+        });
+
+        windows.push(QuotaWindow {
+            name: "Monthly usage (月度用量)".into(),
+            used_percent: Some(mo_used),
+            remaining_percent: Some(mo_rem),
+            resets_at: mo_resets_at,
+            reset_in_seconds: mo_reset_sec,
+            detail: Some(format!("{} · Standard 月度计费用量窗口", plan)),
+        });
+
+        // Also surface Droid Core rate limits if any Droid Core bucket is actively used
+        if let Some(core) = lim_root.pointer("/limits/core") {
+            for (key, label) in &[
+                ("fiveHour", "Droid Core · 5-hour usage"),
+                ("weekly", "Droid Core · Weekly usage"),
+                ("monthly", "Droid Core · Monthly usage"),
+            ] {
+                let (c_used, c_rem, c_resets_at, c_reset_sec) =
+                    parse_rate_limit_bucket(core.get(*key), now);
+                if c_used > 0.0 || c_reset_sec.is_some() {
+                    windows.push(QuotaWindow {
+                        name: (*label).into(),
+                        used_percent: Some(c_used),
+                        remaining_percent: Some(c_rem),
+                        resets_at: c_resets_at,
+                        reset_in_seconds: c_reset_sec,
+                        detail: Some("Droid Core 免费开源模型池速率窗口".into()),
+                    });
                 }
             }
         }
-
-        // 2. Try User info endpoint (for Individual Pro / Standard tiers)
-        let user_url = "https://api.factory.ai/api/v0/users/me";
-        if let Ok(resp) = client.get(user_url)
-            .bearer_auth(&auth_payload.access_token)
-            .header("User-Agent", "Local-AI-Route/Factory-Client")
-            .send()
-            .await
-        {
-            if resp.status().is_success() {
-                if let Ok(val) = resp.json::<Value>().await {
-                    user_profile_info = Some(val);
-                }
-            }
-        }
+    } else {
+        // Offline / API unreachable fallback
+        windows.push(QuotaWindow {
+            name: "5-hour usage (5小时用量)".into(),
+            used_percent: None,
+            remaining_percent: None,
+            resets_at: None,
+            reset_in_seconds: None,
+            detail: Some("暂无法连接 Factory Billing API，请检查网络或代理设置后点击刷新配额".into()),
+        });
     }
-
-    if let Some(ref u) = user_profile_info {
-        if let Some(email) = u.get("email").and_then(|v| v.as_str()) {
-            extra_info.insert("User Email".into(), email.to_string());
-        }
-        if let Some(sub) = u.get("subscription").or_else(|| u.get("tier")).and_then(|v| v.as_str()) {
-            extra_info.insert("Subscription Tier".into(), sub.to_string());
-        }
-        if let Some(status) = u.get("status").and_then(|v| v.as_str()) {
-            extra_info.insert("Account Status".into(), status.to_string());
-        }
-    }
-
-    if let Some(ref info) = api_credit_info {
-        if let Some(global_lim) = info.get("globalLimit").and_then(|v| v.as_i64()) {
-            extra_info.insert("Global Credits Limit".into(), global_lim.to_string());
-        }
-        if let Some(used) = info.get("usedCredits").and_then(|v| v.as_i64()) {
-            extra_info.insert("Used Credits".into(), used.to_string());
-        }
-    }
-
-    // 5-Hour Rolling Rate Limit Window
-    windows.push(QuotaWindow {
-        name: "5小时滚动速率限制".into(),
-        used_percent: None,
-        remaining_percent: Some(100.0),
-        resets_at: None,
-        reset_in_seconds: None,
-        detail: Some(format!("{} · 5小时滚动速率窗口，Standard Usage 优先消耗", plan)),
-    });
-
-    // 7-Day Rolling Rate Limit Window
-    windows.push(QuotaWindow {
-        name: "7天滚动速率限制".into(),
-        used_percent: None,
-        remaining_percent: Some(100.0),
-        resets_at: None,
-        reset_in_seconds: None,
-        detail: Some("7天速率窗口 · 超额自动降级至免费 Droid Core 开源模型池".into()),
-    });
-
-    // 30-Day Rolling Cycle
-    windows.push(QuotaWindow {
-        name: "30天计费重置周期".into(),
-        used_percent: None,
-        remaining_percent: Some(100.0),
-        resets_at: None,
-        reset_in_seconds: None,
-        detail: Some("月度滚动重置周期 · 支持额外充值 Extra Usage 永不过期".into()),
-    });
 
     Ok(AccountQuota {
         provider: "factory".into(),
@@ -562,12 +967,12 @@ pub fn prepare_new_factory_login() -> Result<String, String> {
 
     #[cfg(target_os = "windows")]
     {
-        for target in &["Factory CLI/auth-encryption-key", "Factory CLI"] {
+        for target in CRED_MGR_TARGETS {
             let _ = crate::accounts::crypto::cred_mgr::delete_credential(target);
         }
     }
 
-    Ok("已重置 Factory 桌面端/Droid 当前会话凭据与系统凭据，您可以重新启动 Factory 客户端登录新账号，登录完成后点击「从当前客户端导入」即可保存。".into())
+    Ok("已重置 Factory 桌面端当前会话凭据与系统凭据，您可以重新启动 Factory 客户端登录新账号，登录完成后点击「从当前客户端导入」即可保存。".into())
 }
 
 #[cfg(test)]
@@ -621,11 +1026,47 @@ mod tests {
 
         let payload_team = r#"{"access_token":"eyJhbGciOiJub25lIn0.eyJlbWFpbCI6ImFkbWluQHRlYW0uY29tIiwidGllciI6InRlYW1zIiwiZXhwIjoxODAwMDAwMDAwfQ."}"#;
         let id_team = parse_identity(payload_team);
-        assert_eq!(id_team.plan_type.as_deref(), Some("Team"));
+        assert_eq!(id_team.plan_type.as_deref(), Some("Teams"));
 
         let payload_ent = r#"{"access_token":"eyJhbGciOiJub25lIn0.eyJzdWJzY3JpcHRpb24iOiJlbnRlcnByaXNlIn0."}"#;
         let id_ent = parse_identity(payload_ent);
         assert_eq!(id_ent.plan_type.as_deref(), Some("Enterprise"));
+
+        // Verify fallback to whoami.organization.subscription.factoryTier ("team" -> "Pro")
+        let payload_whoami = r#"{"access_token":"","whoami":{"email":"dev@factory.ai","userId":"usr_99","organization":{"subscription":{"factoryTier":"team"}}}}"#;
+        let id_whoami = parse_identity(payload_whoami);
+        assert_eq!(id_whoami.email.as_deref(), Some("dev@factory.ai"));
+        assert_eq!(id_whoami.subject.as_deref(), Some("usr_99"));
+        assert_eq!(id_whoami.plan_type.as_deref(), Some("Pro"));
+    }
+
+    #[test]
+    fn test_parse_rate_limit_bucket() {
+        let now = DateTime::parse_from_rfc3339("2026-11-09T09:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let active_bucket = serde_json::json!({
+            "usedPercent": 16,
+            "windowEnd": "2026-11-09T13:43:10.091Z",
+            "secondsRemaining": 17028
+        });
+        let (used, rem, resets_at, sec) = parse_rate_limit_bucket(Some(&active_bucket), now);
+        assert_eq!(used, 16.0);
+        assert_eq!(rem, 84.0);
+        assert!(resets_at.is_some());
+        assert_eq!(sec, Some(17028));
+
+        let inactive_bucket = serde_json::json!({
+            "usedPercent": 0,
+            "windowEnd": null,
+            "secondsRemaining": null
+        });
+        let (used2, rem2, resets_at2, sec2) = parse_rate_limit_bucket(Some(&inactive_bucket), now);
+        assert_eq!(used2, 0.0);
+        assert_eq!(rem2, 100.0);
+        assert!(resets_at2.is_none());
+        assert!(sec2.is_none());
     }
 
     #[test]

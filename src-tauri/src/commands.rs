@@ -37,7 +37,7 @@ pub fn get_settings(app: tauri::AppHandle, state: State<'_, AppState>) -> AppSet
     let mut updated = false;
     for preset in crate::core::presets::builtin_presets() {
         let entry = settings.targets.entry(preset.id.clone()).or_insert_with(TargetOverride::default);
-        if should_heal_builtin_path(&entry.exe_path) {
+        if should_heal_builtin_path(&preset.id, &entry.exe_path) {
             let candidate = discover_target_executable(&preset.id).or_else(|| {
                 if !entry.exe_path.is_empty() {
                     let resolved = resolve_executable_for_launch(&entry.exe_path);
@@ -56,7 +56,7 @@ pub fn get_settings(app: tauri::AppHandle, state: State<'_, AppState>) -> AppSet
         }
     }
     for custom in &mut settings.custom_apps {
-        if !custom.exe_path.is_empty() && should_heal_builtin_path(&custom.exe_path) {
+        if !custom.exe_path.is_empty() && should_heal_builtin_path(&custom.id, &custom.exe_path) {
             let resolved = resolve_executable_for_launch(&custom.exe_path);
             if resolved != custom.exe_path && is_executable_present(Path::new(&resolved)) {
                 custom.exe_path = resolved;
@@ -124,7 +124,7 @@ pub(crate) fn resolve_and_heal_target(settings: &mut AppSettings, app_id: &str) 
     let mut target = find_target_spec(settings, app_id)
         .ok_or_else(|| format!("Target app '{}' not found", app_id))?;
 
-    if should_heal_builtin_path(&target.exe_path) {
+    if should_heal_builtin_path(&target.id, &target.exe_path) {
         let candidate = if target.builtin {
             discover_target_executable(&target.id)
         } else {

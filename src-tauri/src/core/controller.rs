@@ -22,12 +22,25 @@ pub fn is_versioned_package_path(path: &str) -> bool {
         || norm.contains("\\app-")
 }
 
-pub fn should_heal_builtin_path(exe_path: &str) -> bool {
+pub fn is_cli_binary_for_app(app_id: &str, path: &str) -> bool {
+    let fname = Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    match app_id {
+        "factory" => matches!(fname.as_str(), "droid.exe" | "droid" | "dsw.exe" | "dsw"),
+        _ => false,
+    }
+}
+
+pub fn should_heal_builtin_path(app_id: &str, exe_path: &str) -> bool {
     let p = Path::new(exe_path);
     exe_path.is_empty()
         || p.is_dir()
         || !is_executable_present(p)
         || is_versioned_package_path(exe_path)
+        || is_cli_binary_for_app(app_id, exe_path)
 }
 
 pub fn is_chromium_helper(cmd: &[String]) -> bool {
@@ -184,8 +197,6 @@ fn is_matching_exe_name(actual_name: &str, target_name: &str) -> bool {
                 | ("gemini-desktop", "gemini")
                 | ("factory", "factory-desktop")
                 | ("factory-desktop", "factory")
-                | ("factory", "droid")
-                | ("droid", "factory")
         )
 }
 
@@ -614,6 +625,17 @@ mod tests {
         ));
         assert!(!is_versioned_package_path(
             r"C:\Users\apuser\AppData\Local\Microsoft\WindowsApps\chatgpt-desktop.exe"
+        ));
+    }
+
+    #[test]
+    fn test_is_cli_binary_for_app() {
+        assert!(is_cli_binary_for_app("factory", r"C:\Users\apuser\bin\droid.exe"));
+        assert!(is_cli_binary_for_app("factory", r"/usr/local/bin/droid"));
+        assert!(!is_cli_binary_for_app("custom-app", r"C:\Users\apuser\bin\droid.exe"));
+        assert!(!is_cli_binary_for_app(
+            "factory",
+            r"C:\Users\apuser\AppData\Local\Factory\app-1.6.0\factory-desktop.exe"
         ));
     }
 }

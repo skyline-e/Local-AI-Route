@@ -716,7 +716,7 @@ onUnmounted(() => {
         <div>
           <h1 class="text-base font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
             {{ t("app_title") }}
-            <span class="text-[10px] px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300 font-mono">v0.2.7</span>
+            <span class="text-[10px] px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300 font-mono">v0.2.8</span>
           </h1>
           <p class="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">{{ t("app_subtitle") }}</p>
         </div>
@@ -1311,11 +1311,16 @@ onUnmounted(() => {
                   :key="idx"
                   class="p-3.5 rounded-lg border border-slate-200/80 dark:border-slate-700/80 bg-white dark:bg-slate-800/80 flex flex-col justify-between space-y-2.5 shadow-2xs hover:border-slate-300 dark:hover:border-slate-600 transition"
                 >
-                  <div class="flex items-start justify-between gap-2">
-                    <span class="text-xs font-bold text-slate-800 dark:text-slate-100 break-words leading-snug flex-1" :title="w.name">
+                  <div class="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
+                    <span class="text-xs font-bold text-slate-800 dark:text-slate-100 break-words leading-snug" :title="w.name">
                       {{ w.name }}
                     </span>
-                    <span v-if="w.remaining_percent !== undefined && w.remaining_percent !== null" class="text-xs font-bold font-mono text-sky-600 dark:text-sky-400 shrink-0 whitespace-nowrap pt-0.5">
+                    <span v-if="w.used_percent !== undefined && w.used_percent !== null && w.remaining_percent !== undefined && w.remaining_percent !== null" class="text-xs font-bold font-mono shrink-0 whitespace-nowrap ml-auto">
+                      <span class="text-amber-600 dark:text-amber-400">{{ w.used_percent }}% {{ t("quota_used") }}</span>
+                      <span class="text-slate-300 dark:text-slate-600 mx-1">/</span>
+                      <span class="text-sky-600 dark:text-sky-400">{{ w.remaining_percent }}% {{ t("quota_remaining") }}</span>
+                    </span>
+                    <span v-else-if="w.remaining_percent !== undefined && w.remaining_percent !== null" class="text-xs font-bold font-mono text-sky-600 dark:text-sky-400 shrink-0 whitespace-nowrap pt-0.5">
                       {{ w.remaining_percent }}% {{ t("quota_remaining") }}
                     </span>
                     <span v-else-if="w.used_percent !== undefined && w.used_percent !== null" class="text-xs font-bold font-mono text-amber-600 dark:text-amber-400 shrink-0 whitespace-nowrap pt-0.5">
