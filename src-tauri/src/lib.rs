@@ -138,7 +138,12 @@ pub fn run() {
             commands::delete_account,
             commands::refresh_quota,
             commands::prepare_new_claude_login,
-            commands::prepare_new_factory_login
+            commands::prepare_new_factory_login,
+            commands::start_oauth_login,
+            commands::poll_oauth_login,
+            commands::submit_oauth_callback,
+            commands::cancel_oauth_login,
+            commands::open_external_url
         ])
         .setup(move |app| {
             // Build Tray Menu

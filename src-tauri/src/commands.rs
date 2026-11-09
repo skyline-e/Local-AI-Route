@@ -335,3 +335,59 @@ pub fn prepare_new_claude_login() -> Result<String, String> {
 pub fn prepare_new_factory_login() -> Result<String, String> {
     crate::accounts::factory::prepare_new_factory_login()
 }
+
+use crate::accounts::oauth::{OAuthPollResponse, OAuthStartInfo};
+
+#[tauri::command]
+pub async fn start_oauth_login(
+    app_id: String,
+    custom_name: Option<String>,
+    open_browser: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<OAuthStartInfo, String> {
+    let proxy = {
+        let settings = safe_lock(&state.settings);
+        let use_proxy = find_target_spec(&settings, &app_id)
+            .map(|t| t.proxy_enabled)
+            .unwrap_or(true);
+        if use_proxy {
+            Some(settings.proxy.clone())
+        } else {
+            None
+        }
+    };
+    crate::accounts::oauth::start_oauth_login(
+        &app_id,
+        custom_name,
+        open_browser.unwrap_or(true),
+        proxy,
+    )
+    .await
+}
+
+#[tauri::command]
+pub fn poll_oauth_login(
+    session_id: String,
+    custom_name: Option<String>,
+) -> Result<OAuthPollResponse, String> {
+    crate::accounts::oauth::poll_oauth_login(&session_id, custom_name)
+}
+
+#[tauri::command]
+pub async fn submit_oauth_callback(
+    session_id: String,
+    callback_input: String,
+    custom_name: Option<String>,
+) -> Result<AccountProfile, String> {
+    crate::accounts::oauth::submit_oauth_callback(&session_id, &callback_input, custom_name).await
+}
+
+#[tauri::command]
+pub fn cancel_oauth_login(session_id: String) -> Result<(), String> {
+    crate::accounts::oauth::cancel_oauth_login(&session_id)
+}
+
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    crate::accounts::oauth::open_url_in_browser(&url)
+}

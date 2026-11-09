@@ -5,7 +5,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-fn get_oauth_client_id() -> String {
+pub(crate) fn get_oauth_client_id() -> String {
     const RAW: &[u8] = &[
         107, 106, 109, 107, 106, 106, 108, 106, 108, 106, 111, 99, 107, 119, 46, 55, 50, 41, 41, 51,
         52, 104, 50, 104, 107, 54, 57, 40, 63, 104, 105, 111, 44, 46, 53, 54, 53, 48, 50, 110, 61,
@@ -16,7 +16,7 @@ fn get_oauth_client_id() -> String {
     String::from_utf8(decoded).unwrap_or_default()
 }
 
-fn get_oauth_client_secret() -> String {
+pub(crate) fn get_oauth_client_secret() -> String {
     const RAW: &[u8] = &[
         29, 21, 25, 9, 10, 2, 119, 17, 111, 98, 28, 13, 8, 110, 98, 108, 22, 62, 22, 16, 107, 55, 22,
         24, 98, 41, 2, 25, 110, 32, 108, 43, 30, 27, 60,

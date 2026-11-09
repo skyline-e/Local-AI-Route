@@ -208,30 +208,158 @@ struct ClaudeUsageWindow {
     resets_at: Option<String>,
 }
 
+const CLAUDE_OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const CLAUDE_OAUTH_TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
+
+pub fn encode_token_cache_v2(
+    claude_dir: &Path,
+    access_token: &str,
+    expires_at_ms: i64,
+    account_uuid: Option<&str>,
+) -> Result<String, String> {
+    use base64::Engine;
+    let key = load_claude_app_key(claude_dir)?;
+    let uuid_part = account_uuid.unwrap_or("default");
+    let cache_json = serde_json::json!({
+        format!("{}:user:profile", uuid_part): {
+            "token": access_token,
+            "expiresAt": expires_at_ms
+        },
+        format!("{}:user:inference", uuid_part): {
+            "token": access_token,
+            "expiresAt": expires_at_ms
+        }
+    });
+    let pt_bytes = serde_json::to_vec(&cache_json).map_err(|e| e.to_string())?;
+    let encrypted = super::crypto::encrypt_chromium_v10(&key, &pt_bytes)?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(encrypted))
+}
+
+async fn refresh_claude_oauth_token(
+    refresh_token: &str,
+    proxy: Option<&crate::core::models::ProxyConfig>,
+) -> Result<(String, Option<String>, i64), String> {
+    let client = super::build_http_client(proxy, 15);
+    let body = serde_json::json!({
+        "grant_type": "refresh_token",
+        "client_id": CLAUDE_OAUTH_CLIENT_ID,
+        "refresh_token": refresh_token,
+    });
+
+    let resp = client
+        .post(CLAUDE_OAUTH_TOKEN_URL)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Claude token refresh request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        let err_text = resp.text().await.unwrap_or_default();
+        return Err(format!("Claude token refresh failed: {}", err_text));
+    }
+
+    let data: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Invalid JSON in Claude token refresh response: {}", e))?;
+
+    let new_access = data
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Claude refresh response missing access_token".to_string())?
+        .to_string();
+    let new_refresh = data
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    let expires_in = data.get("expires_in").and_then(|v| v.as_i64()).unwrap_or(28800);
+    let expires_at_ms = (Utc::now() + chrono::Duration::seconds(expires_in)).timestamp_millis();
+
+    Ok((new_access, new_refresh, expires_at_ms))
+}
+
 pub async fn query_quota(
     claude_dir: &Path,
     auth_config_json: &str,
     account_id: &str,
     proxy: Option<&crate::core::models::ProxyConfig>,
 ) -> Result<AccountQuota, String> {
-    let auth_val: Value = serde_json::from_str(auth_config_json)
+    let mut auth_val: Value = serde_json::from_str(auth_config_json)
         .map_err(|e| format!("Failed to parse Claude auth config: {}", e))?;
-
-    let token_cache_v2 = auth_val
-        .get("oauth:tokenCacheV2")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "Missing oauth:tokenCacheV2 in Claude auth config".to_string())?;
 
     let uuid_val = auth_val
         .get("lastKnownAccountUuid")
         .and_then(|v| v.as_str())
-        .unwrap_or(account_id);
+        .unwrap_or(account_id)
+        .to_string();
 
-    let access_token = if token_cache_v2.starts_with("sk-ant-") || token_cache_v2.starts_with("Bearer ") {
+    let mut oauth_access = auth_val
+        .get("oauth_access_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let oauth_refresh = auth_val
+        .get("oauth_refresh_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let mut oauth_expires_at = auth_val
+        .get("oauth_expires_at")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    let now_ms = Utc::now().timestamp_millis();
+    // Proactively refresh if OAuth token is expired or within 3 minutes of expiry
+    if !oauth_refresh.is_empty() && (oauth_access.is_empty() || (oauth_expires_at > 0 && now_ms + 180_000 >= oauth_expires_at)) {
+        if let Ok((new_at, new_rt_opt, new_exp_ms)) = refresh_claude_oauth_token(&oauth_refresh, proxy).await {
+            oauth_access = new_at.clone();
+            oauth_expires_at = new_exp_ms;
+            if let Some(obj) = auth_val.as_object_mut() {
+                obj.insert("oauth_access_token".to_string(), Value::String(new_at.clone()));
+                if let Some(new_rt) = new_rt_opt {
+                    obj.insert("oauth_refresh_token".to_string(), Value::String(new_rt));
+                }
+                obj.insert("oauth_expires_at".to_string(), Value::Number(new_exp_ms.into()));
+                if let Ok(encoded_v2) = encode_token_cache_v2(claude_dir, &new_at, new_exp_ms, Some(&uuid_val)) {
+                    obj.insert("oauth:tokenCacheV2".to_string(), Value::String(encoded_v2));
+                } else {
+                    obj.insert("oauth:tokenCacheV2".to_string(), Value::String(new_at));
+                }
+            }
+            if let Ok(updated_str) = serde_json::to_string_pretty(&auth_val) {
+                let _ = super::storage::save_account_data("claude", account_id, "config_auth.json", updated_str.as_bytes());
+            }
+        }
+    }
+
+    let token_cache_v2 = auth_val
+        .get("oauth:tokenCacheV2")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let oauth_access_unexpired = !oauth_access.is_empty() && (oauth_expires_at == 0 || now_ms < oauth_expires_at);
+
+    let access_token = if oauth_access_unexpired {
+        oauth_access.trim_start_matches("Bearer ").trim().to_string()
+    } else if token_cache_v2.starts_with("sk-ant-") || token_cache_v2.starts_with("Bearer ") {
         token_cache_v2.trim_start_matches("Bearer ").trim().to_string()
+    } else if !token_cache_v2.is_empty() {
+        extract_access_token_from_token_cache(claude_dir, token_cache_v2, Some(&uuid_val))
+            .or_else(|_| extract_access_token_from_token_cache(claude_dir, token_cache_v2, None))
+            .or_else(|e| {
+                if !oauth_access.is_empty() {
+                    Ok(oauth_access.trim_start_matches("Bearer ").trim().to_string())
+                } else {
+                    Err(e)
+                }
+            })?
+    } else if !oauth_access.is_empty() {
+        oauth_access.trim_start_matches("Bearer ").trim().to_string()
     } else {
-        extract_access_token_from_token_cache(claude_dir, token_cache_v2, Some(uuid_val))
-            .or_else(|_| extract_access_token_from_token_cache(claude_dir, token_cache_v2, None))?
+        return Err("Missing oauth:tokenCacheV2 in Claude auth config".to_string());
     };
 
     let client = super::build_http_client(proxy, 15);

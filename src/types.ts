@@ -104,3 +104,19 @@ export interface AccountSwitchResult {
   message: string;
 }
 
+export interface OAuthStartInfo {
+  session_id: string;
+  provider: string;
+  auth_url: string;
+  user_code?: string;
+  redirect_uri?: string;
+  mode: "local_callback" | "device_code" | "code_paste";
+}
+
+export interface OAuthPollResponse {
+  status: "pending" | "completed" | "failed" | "cancelled";
+  account?: AccountProfile;
+  error?: string;
+}
+
+

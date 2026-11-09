@@ -4,6 +4,7 @@ pub mod claude;
 pub mod crypto;
 pub mod factory;
 pub mod models;
+pub mod oauth;
 pub mod storage;
 
 use crate::core::controller::{ensure_stopped_before_relaunch, launch_target};
@@ -656,7 +657,10 @@ pub async fn switch_account(
                 let cfg_path = claude_dir.join("config.json");
                 if let Ok(cfg_raw) = std::fs::read_to_string(&cfg_path) {
                     if let Ok(cfg_val) = serde_json::from_str::<serde_json::Value>(&cfg_raw) {
-                        let mut auth_keys = serde_json::Map::new();
+                        let mut auth_keys = storage::read_account_data(provider, &active_account.id, "config_auth.json")
+                            .ok()
+                            .and_then(|bytes| serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&bytes).ok())
+                            .unwrap_or_default();
                         for k in &["oauth:tokenCache", "oauth:tokenCacheV2", "lastKnownAccountUuid"] {
                             if let Some(v) = cfg_val.get(*k) {
                                 auth_keys.insert(k.to_string(), v.clone());
@@ -694,7 +698,9 @@ pub async fn switch_account(
             if let Some(main_obj) = main_cfg.as_object_mut() {
                 if let Some(target_obj) = target_auth_val.as_object() {
                     for (k, v) in target_obj {
-                        main_obj.insert(k.clone(), v.clone());
+                        if !k.starts_with("oauth_") {
+                            main_obj.insert(k.clone(), v.clone());
+                        }
                     }
                 }
             }
@@ -811,7 +817,7 @@ pub async fn refresh_quota(
         }
         "claude" => {
             let claude_dir = claude::find_claude_data_dir()
-                .ok_or_else(|| "Claude data directory not found".to_string())?;
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
             let data = storage::read_account_data(provider, &target_id, "config_auth.json")?;
             let auth_cfg = String::from_utf8(data).map_err(|e| e.to_string())?;
             claude::query_quota(&claude_dir, &auth_cfg, &target_id, proxy).await?

@@ -10,6 +10,8 @@ import {
   AccountProfile,
   AccountQuota,
   AccountSwitchResult,
+  OAuthStartInfo,
+  OAuthPollResponse,
 } from "./types";
 import { t, currentLang, detectSystemLanguage } from "./i18n";
 import {
@@ -586,39 +588,207 @@ async function handleDeleteAccount(account: AccountProfile) {
   }
 }
 
-// Add Account Modal
+// Add Account Modal (Supports both OAuth Browser Login & Manual Credential Paste)
 const addAccountModal = ref<{
   open: boolean;
+  tab: "oauth" | "manual";
   name: string;
   content: string;
 }>({
   open: false,
+  tab: "oauth",
   name: "",
   content: "",
 });
 
-function openAddAccountModal() {
+const oauthState = ref<{
+  isStarting: boolean;
+  isSubmitting: boolean;
+  session: OAuthStartInfo | null;
+  callbackInput: string;
+  error: string;
+}>({
+  isStarting: false,
+  isSubmitting: false,
+  session: null,
+  callbackInput: "",
+  error: "",
+});
+
+let oauthPollTimer: number | null = null;
+
+function stopOAuthPolling() {
+  if (oauthPollTimer) {
+    clearInterval(oauthPollTimer);
+    oauthPollTimer = null;
+  }
+}
+
+async function closeAddAccountModal() {
+  stopOAuthPolling();
+  const activeSessionId = oauthState.value.session?.session_id;
+  oauthState.value = {
+    isStarting: false,
+    isSubmitting: false,
+    session: null,
+    callbackInput: "",
+    error: "",
+  };
+  addAccountModal.value.open = false;
+  if (activeSessionId) {
+    try {
+      await invoke("cancel_oauth_login", { sessionId: activeSessionId });
+    } catch {}
+  }
+}
+
+function openAddAccountModal(tab: "oauth" | "manual" = "oauth", autoStartOAuth = false) {
+  stopOAuthPolling();
+  const prevSessionId = oauthState.value.session?.session_id;
+  if (prevSessionId) {
+    invoke("cancel_oauth_login", { sessionId: prevSessionId }).catch(() => {});
+  }
   addAccountModal.value = {
     open: true,
+    tab,
     name: "",
     content: "",
   };
+  oauthState.value = {
+    isStarting: false,
+    isSubmitting: false,
+    session: null,
+    callbackInput: "",
+    error: "",
+  };
+  if (tab === "oauth" && autoStartOAuth) {
+    handleStartOAuthLogin();
+  }
+}
+
+async function handleStartOAuthLogin() {
+  const currentId = currentTarget.value?.id;
+  if (!currentId || oauthState.value.isStarting) return;
+
+  stopOAuthPolling();
+  if (oauthState.value.session?.session_id) {
+    try {
+      await invoke("cancel_oauth_login", { sessionId: oauthState.value.session.session_id });
+    } catch {}
+  }
+
+  oauthState.value.isStarting = true;
+  oauthState.value.error = "";
+  oauthState.value.callbackInput = "";
+
+  try {
+    const info = await invoke<OAuthStartInfo>("start_oauth_login", {
+      appId: currentId,
+      customName: addAccountModal.value.name.trim() || null,
+      openBrowser: true,
+    });
+    oauthState.value.session = info;
+
+    if (info.mode !== "code_paste") {
+      oauthPollTimer = window.setInterval(async () => {
+        if (!oauthState.value.session) {
+          stopOAuthPolling();
+          return;
+        }
+        try {
+          const res = await invoke<OAuthPollResponse>("poll_oauth_login", {
+            sessionId: oauthState.value.session.session_id,
+            customName: addAccountModal.value.name.trim() || null,
+          });
+          if (res.status === "completed") {
+            stopOAuthPolling();
+            oauthState.value.session = null;
+            addAccountModal.value.open = false;
+            showToast(
+              `${t("oauth_login_success")}: ${res.account?.name || ""}`,
+              "success"
+            );
+            await loadAccountsForCurrent();
+          } else if (res.status === "failed") {
+            stopOAuthPolling();
+            oauthState.value.error = res.error || "OAuth 登录失败";
+          } else if (res.status === "cancelled") {
+            stopOAuthPolling();
+          }
+        } catch {}
+      }, 1200);
+    }
+  } catch (err) {
+    oauthState.value.error = `${err}`;
+    showToast(`发起 OAuth 失败: ${err}`, "error");
+  } finally {
+    oauthState.value.isStarting = false;
+  }
+}
+
+async function handleSubmitOAuthCallback() {
+  const sess = oauthState.value.session;
+  const rawInput = oauthState.value.callbackInput.trim();
+  if (!sess || !rawInput || oauthState.value.isSubmitting) return;
+
+  oauthState.value.isSubmitting = true;
+  oauthState.value.error = "";
+  try {
+    const acct = await invoke<AccountProfile>("submit_oauth_callback", {
+      sessionId: sess.session_id,
+      callbackInput: rawInput,
+      customName: addAccountModal.value.name.trim() || null,
+    });
+    stopOAuthPolling();
+    oauthState.value.session = null;
+    addAccountModal.value.open = false;
+    showToast(`${t("oauth_login_success")}: ${acct.name}`, "success");
+    await loadAccountsForCurrent();
+  } catch (err) {
+    oauthState.value.error = `${err}`;
+    showToast(`验证授权码失败: ${err}`, "error");
+  } finally {
+    oauthState.value.isSubmitting = false;
+  }
+}
+
+function copyOAuthUrl() {
+  if (!oauthState.value.session?.auth_url) return;
+  navigator.clipboard.writeText(oauthState.value.session.auth_url);
+  showToast(t("oauth_url_copied"), "success");
+}
+
+function copyOAuthUserCode() {
+  if (!oauthState.value.session?.user_code) return;
+  navigator.clipboard.writeText(oauthState.value.session.user_code);
+  showToast(t("oauth_code_copied"), "success");
+}
+
+async function reopenOAuthBrowser() {
+  if (!oauthState.value.session?.auth_url) return;
+  try {
+    await invoke("open_external_url", { url: oauthState.value.session.auth_url });
+  } catch (err) {
+    showToast(`${err}`, "error");
+  }
 }
 
 async function handleAddAccountSubmit() {
   const currentId = currentTarget.value?.id;
-  if (!currentId || !addAccountModal.value.name.trim() || !addAccountModal.value.content.trim()) {
+  if (!currentId || !addAccountModal.value.content.trim()) {
     showToast(t("toast_fill_fields"), "warn");
     return;
   }
+  const accountLabel =
+    addAccountModal.value.name.trim() || `${currentTarget.value?.name || "AI"} Account`;
   try {
     await invoke<AccountProfile>("add_manual_account", {
       appId: currentId,
-      name: addAccountModal.value.name.trim(),
+      name: accountLabel,
       rawContent: addAccountModal.value.content.trim(),
     });
     showToast("账号添加成功", "success");
-    addAccountModal.value.open = false;
+    await closeAddAccountModal();
     await loadAccountsForCurrent();
   } catch (err) {
     showToast(`添加账号失败: ${err}`, "error");
@@ -681,6 +851,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (statusPollTimer) clearInterval(statusPollTimer);
+  stopOAuthPolling();
 });
 </script>
 
@@ -716,7 +887,7 @@ onUnmounted(() => {
         <div>
           <h1 class="text-base font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
             {{ t("app_title") }}
-            <span class="text-[10px] px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300 font-mono">v0.2.8</span>
+            <span class="text-[10px] px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300 font-mono">v0.2.9</span>
           </h1>
           <p class="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">{{ t("app_subtitle") }}</p>
         </div>
@@ -1200,9 +1371,19 @@ onUnmounted(() => {
                   <span>{{ t("btn_import_active_account") }}</span>
                 </button>
 
-                <!-- Add Account (Manual) -->
+                <!-- OAuth Browser Login -->
                 <button
-                  @click="openAddAccountModal()"
+                  @click="openAddAccountModal('oauth', true)"
+                  class="px-2.5 py-1 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white flex items-center gap-1 transition shadow-xs"
+                  :title="t('btn_oauth_login')"
+                >
+                  <Globe class="w-3.5 h-3.5" />
+                  <span>{{ t("btn_oauth_login") }}</span>
+                </button>
+
+                <!-- Add Account (Manual / OAuth Modal) -->
+                <button
+                  @click="openAddAccountModal('manual', false)"
                   class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1 transition shadow-xs"
                 >
                   <PlusCircle class="w-3.5 h-3.5 text-indigo-500" />
@@ -1375,13 +1556,22 @@ onUnmounted(() => {
               <p class="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto leading-relaxed">
                 {{ t("no_accounts_tip") }}
               </p>
-              <button
-                @click="handleImportCurrentAccount()"
-                class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-sky-600 hover:bg-sky-700 text-white inline-flex items-center gap-1.5 shadow-sm transition"
-              >
-                <UserCheck class="w-3.5 h-3.5" />
-                {{ t("btn_import_active_account") }}
-              </button>
+              <div class="flex items-center justify-center gap-2 pt-1">
+                <button
+                  @click="handleImportCurrentAccount()"
+                  class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-sky-600 hover:bg-sky-700 text-white inline-flex items-center gap-1.5 shadow-sm transition"
+                >
+                  <UserCheck class="w-3.5 h-3.5" />
+                  {{ t("btn_import_active_account") }}
+                </button>
+                <button
+                  @click="openAddAccountModal('oauth', true)"
+                  class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white inline-flex items-center gap-1.5 shadow-sm transition"
+                >
+                  <Globe class="w-3.5 h-3.5" />
+                  {{ t("btn_oauth_login") }}
+                </button>
+              </div>
             </div>
 
             <!-- Saved Accounts List Section -->
@@ -1768,26 +1958,170 @@ onUnmounted(() => {
         <div class="flex items-center justify-between border-b border-slate-100 dark:border-slate-700/60 pb-3">
           <div class="flex items-center gap-2">
             <PlusCircle class="w-4 h-4 text-sky-500" />
-            <h3 class="text-sm font-bold text-slate-900 dark:text-white">{{ t("modal_add_account_title") }}</h3>
+            <h3 class="text-sm font-bold text-slate-900 dark:text-white">
+              {{ currentTarget ? (currentLang === 'en-US' && currentTarget.name_en ? currentTarget.name_en : currentTarget.name) + ' · ' : '' }}{{ t("modal_add_account_title") }}
+            </h3>
           </div>
-          <button @click="addAccountModal.open = false" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+          <button @click="closeAddAccountModal" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
             <X class="w-4 h-4" />
           </button>
         </div>
 
-        <div class="space-y-3">
-          <div>
-            <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-              {{ t("account_custom_name") }}
-            </label>
-            <input
-              v-model="addAccountModal.name"
-              type="text"
-              placeholder="e.g. Work, Personal, Client-1"
-              class="w-full text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 p-2.5 focus:ring-2 focus:ring-sky-500 outline-none"
-            />
+        <!-- Mode Switch Tabs: OAuth Login vs Manual Paste -->
+        <div class="grid grid-cols-2 gap-1 p-1 rounded-lg bg-slate-100 dark:bg-slate-900/70 border border-slate-200/70 dark:border-slate-700/70">
+          <button
+            @click="addAccountModal.tab = 'oauth'"
+            :class="[
+              'py-1.5 px-3 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition',
+              addAccountModal.tab === 'oauth'
+                ? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-xs'
+                : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+            ]"
+          >
+            <Globe class="w-3.5 h-3.5" />
+            <span>{{ t("tab_oauth_login") }}</span>
+          </button>
+          <button
+            @click="addAccountModal.tab = 'manual'"
+            :class="[
+              'py-1.5 px-3 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition',
+              addAccountModal.tab === 'manual'
+                ? 'bg-white dark:bg-slate-800 text-sky-600 dark:text-sky-400 shadow-xs'
+                : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+            ]"
+          >
+            <Key class="w-3.5 h-3.5" />
+            <span>{{ t("tab_manual_paste") }}</span>
+          </button>
+        </div>
+
+        <!-- Account Custom Label (Shared) -->
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+            {{ t("account_custom_name") }}
+          </label>
+          <input
+            v-model="addAccountModal.name"
+            type="text"
+            :placeholder="t('account_name_optional_placeholder')"
+            class="w-full text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 p-2.5 focus:ring-2 focus:ring-sky-500 outline-none"
+          />
+        </div>
+
+        <!-- TAB 1: OAuth Browser Login -->
+        <div v-if="addAccountModal.tab === 'oauth'" class="space-y-3">
+          <!-- Launch / Regenerate OAuth Button -->
+          <div class="flex items-center gap-2">
+            <button
+              @click="handleStartOAuthLogin"
+              :disabled="oauthState.isStarting"
+              class="flex-1 py-2.5 px-4 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold flex items-center justify-center gap-2 shadow-sm transition disabled:opacity-50"
+            >
+              <RotateCw v-if="oauthState.isStarting" class="w-4 h-4 animate-spin" />
+              <Globe v-else class="w-4 h-4" />
+              <span>{{ oauthState.session ? t("btn_restart_oauth") : t("btn_start_oauth") }}</span>
+            </button>
           </div>
 
+          <!-- Active OAuth Session Box -->
+          <div
+            v-if="oauthState.session"
+            class="p-3.5 rounded-lg border border-indigo-200/80 dark:border-indigo-800/60 bg-indigo-50/40 dark:bg-indigo-950/20 space-y-3"
+          >
+            <!-- Status Banner -->
+            <div class="flex items-center gap-2 text-xs text-indigo-700 dark:text-indigo-300 font-medium">
+              <RotateCw class="w-3.5 h-3.5 animate-spin shrink-0 text-indigo-500" />
+              <span v-if="oauthState.session.mode === 'device_code'">{{ t("oauth_waiting_device") }}</span>
+              <span v-else-if="oauthState.session.mode === 'code_paste'">{{ t("oauth_waiting_claude_code") }}</span>
+              <span v-else>{{ t("oauth_waiting_callback") }}</span>
+            </div>
+
+            <!-- Device Verification Code (Factory WorkOS) -->
+            <div
+              v-if="oauthState.session.user_code"
+              class="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-indigo-200 dark:border-indigo-800 flex items-center justify-between"
+            >
+              <div>
+                <span class="block text-[10px] text-slate-400 uppercase">{{ t("oauth_device_code_label") }}</span>
+                <span class="text-base font-mono font-bold tracking-widest text-indigo-600 dark:text-indigo-400 select-text">
+                  {{ oauthState.session.user_code }}
+                </span>
+              </div>
+              <button
+                @click="copyOAuthUserCode"
+                class="px-2.5 py-1 text-xs font-medium rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-1 transition"
+              >
+                <Copy class="w-3.5 h-3.5" />
+                <span>Copy</span>
+              </button>
+            </div>
+
+            <!-- Authorization URL + Copy / Reopen -->
+            <div class="space-y-1">
+              <div class="flex items-center justify-between">
+                <span class="text-[11px] font-medium text-slate-500 dark:text-slate-400">{{ t("oauth_auth_url_label") }}</span>
+                <div class="flex items-center gap-1.5">
+                  <button
+                    @click="copyOAuthUrl"
+                    class="px-2 py-0.5 text-[11px] font-medium rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 flex items-center gap-1 transition"
+                  >
+                    <Copy class="w-3 h-3" />
+                    <span>{{ t("btn_copy_auth_url") }}</span>
+                  </button>
+                  <button
+                    @click="reopenOAuthBrowser"
+                    class="px-2 py-0.5 text-[11px] font-medium rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 flex items-center gap-1 transition"
+                  >
+                    <ExternalLink class="w-3 h-3" />
+                    <span>{{ t("btn_reopen_browser") }}</span>
+                  </button>
+                </div>
+              </div>
+              <input
+                :value="oauthState.session.auth_url"
+                readonly
+                class="w-full text-[11px] font-mono rounded border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/70 px-2.5 py-1.5 text-slate-500 dark:text-slate-400 select-all outline-none"
+              />
+            </div>
+
+            <!-- Callback URL / Authorization Code Paste Input -->
+            <div class="space-y-1.5 pt-1 border-t border-indigo-200/50 dark:border-indigo-800/40">
+              <label class="block text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                {{ t("oauth_callback_input_label") }}
+              </label>
+              <div class="flex items-center gap-2">
+                <input
+                  v-model="oauthState.callbackInput"
+                  type="text"
+                  :placeholder="t('oauth_callback_input_placeholder')"
+                  @keydown.enter="handleSubmitOAuthCallback"
+                  class="flex-1 text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-2 focus:ring-2 focus:ring-indigo-500 outline-none"
+                />
+                <button
+                  @click="handleSubmitOAuthCallback"
+                  :disabled="!oauthState.callbackInput.trim() || oauthState.isSubmitting"
+                  class="px-3 py-2 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white flex items-center gap-1 shrink-0 transition disabled:opacity-50"
+                >
+                  <RotateCw v-if="oauthState.isSubmitting" class="w-3.5 h-3.5 animate-spin" />
+                  <Check v-else class="w-3.5 h-3.5" />
+                  <span>{{ t("btn_submit_oauth_code") }}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Error Alert -->
+          <div
+            v-if="oauthState.error"
+            class="p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-600 dark:text-rose-400 text-xs flex items-center gap-2"
+          >
+            <AlertCircle class="w-4 h-4 shrink-0" />
+            <span class="break-all">{{ oauthState.error }}</span>
+          </div>
+        </div>
+
+        <!-- TAB 2: Manual Paste Credential -->
+        <div v-else class="space-y-3">
           <div>
             <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
               {{ t("account_credential_content") }}
@@ -1803,12 +2137,13 @@ onUnmounted(() => {
 
         <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-700/60">
           <button
-            @click="addAccountModal.open = false"
+            @click="closeAddAccountModal"
             class="px-3.5 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition"
           >
             {{ t("btn_cancel") }}
           </button>
           <button
+            v-if="addAccountModal.tab === 'manual'"
             @click="handleAddAccountSubmit"
             class="px-4 py-1.5 text-xs font-semibold rounded-lg bg-sky-600 hover:bg-sky-700 text-white shadow-sm transition"
           >
