@@ -374,15 +374,46 @@ fn update_min_entry(target: &mut Option<ModelLimitEntry>, candidate: ModelLimitE
     }
 }
 
+fn build_pool_window(
+    name: &str,
+    entry: Option<ModelLimitEntry>,
+    active_detail: &str,
+    idle_detail: &str,
+) -> QuotaWindow {
+    let (rem_pct, used_pct, resets_at, reset_sec, detail) = if let Some(w) = entry {
+        let (rem, used) = round_quota_percent(w.remaining_fraction);
+        (
+            Some(rem),
+            Some(used),
+            w.resets_at,
+            w.reset_in_seconds,
+            active_detail,
+        )
+    } else {
+        (Some(100.0), Some(0.0), None, None, idle_detail)
+    };
+    QuotaWindow {
+        name: name.into(),
+        used_percent: used_pct,
+        remaining_percent: rem_pct,
+        resets_at,
+        reset_in_seconds: reset_sec,
+        detail: Some(detail.into()),
+    }
+}
+
 #[derive(Default)]
 struct ParsedQuotaPools {
     gemini_weekly: Option<ModelLimitEntry>,
     gemini_5h: Option<ModelLimitEntry>,
     claude_weekly: Option<ModelLimitEntry>,
     claude_5h: Option<ModelLimitEntry>,
+    argon_weekly: Option<ModelLimitEntry>,
+    argon_5h: Option<ModelLimitEntry>,
     other_windows: Vec<QuotaWindow>,
     has_gemini: bool,
     has_claude_gpt: bool,
+    has_argon: bool,
 }
 
 impl ParsedQuotaPools {
@@ -391,6 +422,7 @@ impl ParsedQuotaPools {
             || self.gemini_5h.is_none()
             || self.claude_weekly.is_none()
             || self.claude_5h.is_none()
+            || (self.has_argon && self.argon_weekly.is_none())
     }
 
     fn upsert_other_window(&mut self, candidate: QuotaWindow) {
@@ -424,10 +456,15 @@ impl ParsedQuotaPools {
         for group in groups {
             let raw_group_name = group.display_name.unwrap_or_default();
             let group_name = raw_group_name.to_lowercase();
-            // 忽略内部实验性 Argon 分组，与官方 Usage 面板保持一致
+            // 提前标记分组存在性，兼容 Proto3 在未触发限流时省略空 buckets 字段的场景
             if group_name.contains("argon") {
-                continue;
+                self.has_argon = true;
+            } else if group_name.contains("gemini") {
+                self.has_gemini = true;
+            } else if group_name.contains("claude") || group_name.contains("gpt") {
+                self.has_claude_gpt = true;
             }
+
             let Some(buckets) = group.buckets else {
                 continue;
             };
@@ -435,19 +472,20 @@ impl ParsedQuotaPools {
             for bucket in buckets {
                 let raw_bucket_id = bucket.bucket_id.unwrap_or_default();
                 let bucket_id = raw_bucket_id.to_lowercase();
-                if bucket_id.contains("argon") {
-                    continue;
-                }
 
                 let window = bucket.window.unwrap_or_default().to_lowercase();
                 let rem_frac =
                     resolve_remaining_fraction(bucket.remaining_fraction, bucket.reset_time.as_deref());
                 let (resets_at, reset_sec) = parse_reset_time(bucket.reset_time.as_deref(), now);
 
-                let is_gemini = bucket_id.starts_with("gemini-") || group_name.contains("gemini");
-                let is_claude_gpt = bucket_id.starts_with("3p-")
-                    || group_name.contains("claude")
-                    || group_name.contains("gpt");
+                // Gemini 4 Argon 为独立配额池，需优先于普通 Gemini 分组判定（其 bucketId 形如 gemini-argon-wtu-weekly）
+                let is_argon = bucket_id.contains("argon") || group_name.contains("argon");
+                let is_gemini =
+                    !is_argon && (bucket_id.starts_with("gemini-") || group_name.contains("gemini"));
+                let is_claude_gpt = !is_argon
+                    && (bucket_id.starts_with("3p-")
+                        || group_name.contains("claude")
+                        || group_name.contains("gpt"));
 
                 // 优先以显式的 window / bucket_id 后缀判定周期，仅在两者均未指明时用 reset_sec 兜底
                 let explicit_weekly = window == "weekly" || bucket_id.ends_with("-weekly");
@@ -463,7 +501,15 @@ impl ParsedQuotaPools {
                     reset_in_seconds: reset_sec,
                 };
 
-                if is_gemini {
+                if is_argon {
+                    self.has_argon = true;
+                    // Argon 官方默认提供周限额池；仅当显式声明 5h 窗口时归入 argon_5h，防止周限额剩余不足 24h 时被误判为 5h
+                    if explicit_5h {
+                        update_min_entry(&mut self.argon_5h, entry);
+                    } else {
+                        update_min_entry(&mut self.argon_weekly, entry);
+                    }
+                } else if is_gemini {
                     self.has_gemini = true;
                     if is_weekly {
                         update_min_entry(&mut self.gemini_weekly, entry);
@@ -507,22 +553,22 @@ impl ParsedQuotaPools {
         let mut fb_gemini_weekly: Option<ModelLimitEntry> = None;
         let mut fb_claude_5h: Option<ModelLimitEntry> = None;
         let mut fb_claude_weekly: Option<ModelLimitEntry> = None;
+        let mut fb_argon_weekly: Option<ModelLimitEntry> = None;
 
         let mut sorted_keys: Vec<_> = models.keys().cloned().collect();
         sorted_keys.sort();
 
         for key in sorted_keys {
             let key_lower = key.to_lowercase();
-            // 排除内部补全/对话后台模型及实验性 Argon 模型，保持与摘要接口一致
+            // 排除内部补全/对话后台模型，保持与摘要接口一致
             if key_lower.starts_with("chat_") || key_lower.starts_with("tab_") {
                 continue;
             }
 
             let info = &models[&key];
             let display = info.display_name.clone().unwrap_or_else(|| key.clone());
-            if key_lower.contains("argon") || display.to_lowercase().contains("argon") {
-                continue;
-            }
+            let display_lower = display.to_lowercase();
+            let is_argon = key_lower.contains("argon") || display_lower.contains("argon");
 
             let (rem_frac, formatted_resets, reset_sec) = if let Some(q) = &info.quota_info {
                 let rem = resolve_remaining_fraction(q.remaining_fraction, q.reset_time.as_deref());
@@ -538,7 +584,10 @@ impl ParsedQuotaPools {
                 reset_in_seconds: reset_sec,
             };
 
-            if key_lower.contains("gemini") {
+            if is_argon {
+                self.has_argon = true;
+                update_min_entry(&mut fb_argon_weekly, entry);
+            } else if key_lower.contains("gemini") {
                 self.has_gemini = true;
                 if let Some(sec) = reset_sec {
                     if sec <= 86400 {
@@ -590,6 +639,9 @@ impl ParsedQuotaPools {
         if self.claude_weekly.is_none() {
             self.claude_weekly = fb_claude_weekly;
         }
+        if self.argon_weekly.is_none() {
+            self.argon_weekly = fb_argon_weekly;
+        }
     }
 
     fn into_windows(self) -> Vec<QuotaWindow> {
@@ -597,110 +649,53 @@ impl ParsedQuotaPools {
 
         // 1. 生成官方 Gemini Models 配额窗口
         if self.has_gemini || self.gemini_weekly.is_some() || self.gemini_5h.is_some() {
-            let (rem_pct, used_pct, resets_at, reset_sec, detail) = if let Some(w) = self.gemini_weekly {
-                let (rem, used) = round_quota_percent(w.remaining_fraction);
-                (
-                    Some(rem),
-                    Some(used),
-                    w.resets_at,
-                    w.reset_in_seconds,
-                    "Gemini 深度思考与主力模型周总用量池",
-                )
-            } else {
-                (
-                    Some(100.0),
-                    Some(0.0),
-                    None,
-                    None,
-                    "Gemini 深度思考与主力模型周总用量池 (额度充足)",
-                )
-            };
-            windows.push(QuotaWindow {
-                name: "Gemini Models · 周用量限制".into(),
-                used_percent: used_pct,
-                remaining_percent: rem_pct,
-                resets_at,
-                reset_in_seconds: reset_sec,
-                detail: Some(detail.into()),
-            });
-
-            let (rem_pct, used_pct, resets_at, reset_sec, detail) = if let Some(w) = self.gemini_5h {
-                let (rem, used) = round_quota_percent(w.remaining_fraction);
-                (
-                    Some(rem),
-                    Some(used),
-                    w.resets_at,
-                    w.reset_in_seconds,
-                    "适用于 Gemini 2.5 Pro / Flash Lite / Flash 等全部 Gemini 模型",
-                )
-            } else {
-                (
-                    Some(100.0),
-                    Some(0.0),
-                    None,
-                    None,
-                    "适用于 Gemini 2.5 Pro / Flash 等全部 Gemini 模型 (速率充足)",
-                )
-            };
-            windows.push(QuotaWindow {
-                name: "Gemini Models · 5小时速率".into(),
-                used_percent: used_pct,
-                remaining_percent: rem_pct,
-                resets_at,
-                reset_in_seconds: reset_sec,
-                detail: Some(detail.into()),
-            });
+            windows.push(build_pool_window(
+                "Gemini Models · 周用量限制",
+                self.gemini_weekly,
+                "Gemini 深度思考与主力模型周总用量池",
+                "Gemini 深度思考与主力模型周总用量池 (额度充足)",
+            ));
+            windows.push(build_pool_window(
+                "Gemini Models · 5小时速率",
+                self.gemini_5h,
+                "适用于 Gemini 2.5 Pro / Flash Lite / Flash 等全部 Gemini 模型",
+                "适用于 Gemini 2.5 Pro / Flash 等全部 Gemini 模型 (速率充足)",
+            ));
         }
 
         // 2. 生成官方 Claude & GPT models 配额窗口
         if self.has_claude_gpt || self.claude_weekly.is_some() || self.claude_5h.is_some() {
-            let (rem_pct, used_pct, resets_at, reset_sec, detail) = if let Some(w) = self.claude_weekly {
-                let (rem, used) = round_quota_percent(w.remaining_fraction);
-                (
-                    Some(rem),
-                    Some(used),
-                    w.resets_at,
-                    w.reset_in_seconds,
-                    "适用于 Claude Opus / Sonnet 及 GPT 等高阶模型",
-                )
-            } else {
-                (Some(100.0), Some(0.0), None, None, "高阶模型周总用量池 (额度充足)")
-            };
-            windows.push(QuotaWindow {
-                name: "Claude & GPT · 周用量限制".into(),
-                used_percent: used_pct,
-                remaining_percent: rem_pct,
-                resets_at,
-                reset_in_seconds: reset_sec,
-                detail: Some(detail.into()),
-            });
+            windows.push(build_pool_window(
+                "Claude & GPT · 周用量限制",
+                self.claude_weekly,
+                "适用于 Claude Opus / Sonnet 及 GPT 等高阶模型",
+                "高阶模型周总用量池 (额度充足)",
+            ));
+            windows.push(build_pool_window(
+                "Claude & GPT · 5小时速率",
+                self.claude_5h,
+                "Claude / GPT 短周期突发速率窗口",
+                "Claude / GPT 短周期突发速率窗口 (未受限/充足)",
+            ));
+        }
 
-            let (rem_pct, used_pct, resets_at, reset_sec, detail) = if let Some(w) = self.claude_5h {
-                let (rem, used) = round_quota_percent(w.remaining_fraction);
-                (
-                    Some(rem),
-                    Some(used),
-                    w.resets_at,
-                    w.reset_in_seconds,
-                    "Claude / GPT 短周期突发速率窗口",
-                )
-            } else {
-                (
-                    Some(100.0),
-                    Some(0.0),
-                    None,
-                    None,
-                    "Claude / GPT 短周期突发速率窗口 (未受限/充足)",
-                )
-            };
-            windows.push(QuotaWindow {
-                name: "Claude & GPT · 5小时速率".into(),
-                used_percent: used_pct,
-                remaining_percent: rem_pct,
-                resets_at,
-                reset_in_seconds: reset_sec,
-                detail: Some(detail.into()),
-            });
+        // 3. 生成官方 Gemini 4 Argon 独立配额窗口
+        if self.has_argon || self.argon_weekly.is_some() || self.argon_5h.is_some() {
+            windows.push(build_pool_window(
+                "Gemini 4 Argon · 周用量限制",
+                self.argon_weekly,
+                "Gemini 4 Argon 独立周总用量池",
+                "Gemini 4 Argon 独立周总用量池 (额度充足)",
+            ));
+
+            if let Some(w) = self.argon_5h {
+                windows.push(build_pool_window(
+                    "Gemini 4 Argon · 5小时速率",
+                    Some(w),
+                    "Gemini 4 Argon 短周期突发速率窗口",
+                    "Gemini 4 Argon 短周期突发速率窗口 (未受限/充足)",
+                ));
+            }
         }
 
         windows.extend(self.other_windows);
@@ -926,7 +921,7 @@ mod tests {
                             "bucketId": "gemini-argon-wtu-weekly",
                             "window": "weekly",
                             "resetTime": "2026-11-13T11:41:05Z",
-                            "remainingFraction": 1
+                            "remainingFraction": 0.8712
                         }
                     ]
                 }
@@ -940,7 +935,7 @@ mod tests {
         assert!(!pools.is_missing_any_main_pool());
 
         let windows = pools.into_windows();
-        assert_eq!(windows.len(), 4);
+        assert_eq!(windows.len(), 5);
         assert_eq!(windows[0].name, "Gemini Models · 周用量限制");
         assert_eq!(windows[0].remaining_percent, Some(67.0));
         assert_eq!(windows[0].used_percent, Some(33.0));
@@ -960,6 +955,11 @@ mod tests {
         assert_eq!(windows[3].remaining_percent, Some(0.0));
         assert_eq!(windows[3].used_percent, Some(100.0));
         assert_eq!(windows[3].reset_in_seconds, Some(18160));
+
+        assert_eq!(windows[4].name, "Gemini 4 Argon · 周用量限制");
+        assert_eq!(windows[4].remaining_percent, Some(87.0));
+        assert_eq!(windows[4].used_percent, Some(13.0));
+        assert_eq!(windows[4].reset_in_seconds, Some(608705));
     }
 
     #[test]
@@ -976,6 +976,9 @@ mod tests {
                             "remainingFraction": 0.47
                         }
                     ]
+                },
+                {
+                    "displayName": "Gemini 4 Argon"
                 }
             ]
         }"#;
@@ -993,6 +996,13 @@ mod tests {
                         "remainingFraction": 0.996,
                         "resetTime": "2026-11-06T12:35:34Z"
                     }
+                },
+                "gemini-4-argon-medium": {
+                    "displayName": "Gemini 4 Argon (Medium)",
+                    "quotaInfo": {
+                        "remainingFraction": 0.8712,
+                        "resetTime": "2026-11-13T11:41:05Z"
+                    }
                 }
             }
         }"#;
@@ -1003,11 +1013,12 @@ mod tests {
 
         let mut pools = ParsedQuotaPools::default();
         pools.apply_quota_summary(summary, now);
+        assert!(pools.has_argon);
         assert!(pools.is_missing_any_main_pool());
         pools.apply_available_models_fallback(models, now);
 
         let windows = pools.into_windows();
-        assert_eq!(windows.len(), 4);
+        assert_eq!(windows.len(), 5);
         assert_eq!(windows[0].remaining_percent, Some(100.0));
         assert_eq!(windows[1].remaining_percent, Some(100.0));
         assert_eq!(windows[1].reset_in_seconds, Some(7174));
@@ -1017,6 +1028,11 @@ mod tests {
         assert_eq!(windows[3].remaining_percent, Some(0.0));
         assert_eq!(windows[3].used_percent, Some(100.0));
         assert_eq!(windows[3].reset_in_seconds, Some(18160));
+        // Gemini 4 Argon 由 fallback 补齐且不污染 Gemini Models 周限额
+        assert_eq!(windows[4].name, "Gemini 4 Argon · 周用量限制");
+        assert_eq!(windows[4].remaining_percent, Some(87.0));
+        assert_eq!(windows[4].used_percent, Some(13.0));
+        assert_eq!(windows[4].reset_in_seconds, Some(608705));
     }
 
     #[test]
