@@ -828,6 +828,124 @@ pub fn resolve_msix_execution_alias(path_str: &str) -> Option<String> {
     None
 }
 
+fn parse_owl_user_data_dir_name(ini_content: &str) -> Option<String> {
+    let content = ini_content.strip_prefix('\u{FEFF}').unwrap_or(ini_content);
+    let mut in_owl_section = false;
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            let section = line[1..line.len() - 1].trim();
+            in_owl_section = section.eq_ignore_ascii_case("Owl");
+            continue;
+        }
+        if !in_owl_section {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            if key.trim().eq_ignore_ascii_case("UserDataDirectoryName") {
+                let dir_name = value.trim().trim_matches('"').trim();
+                if !dir_name.is_empty()
+                    && !dir_name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
+                    && !dir_name.contains("..")
+                {
+                    return Some(dir_name.to_string());
+                }
+                return None;
+            }
+        }
+    }
+    None
+}
+
+fn is_openai_owl_package(pkg_exe: &str) -> bool {
+    parse_msix_package_from_path(pkg_exe).map_or(false, |(_, _, pkg_family_name)| {
+        pkg_family_name.to_ascii_lowercase().starts_with("openai.")
+    })
+}
+
+fn build_owl_user_data_dir_for_package_exe(
+    pkg_exe: &str,
+    alias_exe: &str,
+    app_data: &str,
+) -> Option<String> {
+    if !is_openai_owl_package(pkg_exe) {
+        return None;
+    }
+
+    let trimmed_app_data = app_data.trim().trim_end_matches(['\\', '/']);
+    if trimmed_app_data.is_empty() {
+        return None;
+    }
+
+    let pkg_dir = Path::new(pkg_exe).parent()?;
+    let ini_path = pkg_dir.join("resources").join("owl-app.ini");
+    let ini_content = std::fs::read_to_string(&ini_path).ok()?;
+    let dir_name = parse_owl_user_data_dir_name(&ini_content)?;
+
+    let alias_stem = Path::new(alias_exe).file_stem()?.to_string_lossy();
+    if alias_stem.eq_ignore_ascii_case(&dir_name) {
+        return None;
+    }
+
+    Some(format!("{}\\Codex\\web\\{}", trimmed_app_data, dir_name))
+}
+
+fn resolve_launch_extra_args_with<F>(
+    original_exe: &str,
+    resolved_exe: &str,
+    app_data: Option<&str>,
+    mut find_pkg_exe: F,
+) -> Vec<String>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    // WindowsApps execution aliases (e.g. chatgpt-desktop.exe) run outside the package
+    // app directory, so chrome_elf.dll cannot find resources\owl-app.ini and falls back
+    // to the alias stem instead of UserDataDirectoryName, splitting single-instance locks
+    // from toast/protocol activations that launch the packaged executable directly.
+    let resolved_norm = resolved_exe.replace('/', "\\");
+    let resolved_low = resolved_norm.to_ascii_lowercase();
+    if !resolved_low.contains("\\microsoft\\windowsapps\\")
+        || parse_msix_package_from_path(&resolved_norm).is_some()
+    {
+        return Vec::new();
+    }
+
+    let original_norm = original_exe.replace('/', "\\");
+    let pkg_exe = find_pkg_exe(&resolved_norm)
+        .or_else(|| {
+            (parse_msix_package_from_path(&original_norm).is_some()
+                && Path::new(&original_norm).is_file())
+            .then_some(original_norm.clone())
+        })
+        .or_else(|| {
+            (!original_norm.eq_ignore_ascii_case(&resolved_norm))
+                .then(|| find_pkg_exe(&original_norm))
+                .flatten()
+        });
+
+    let (Some(pkg_exe), Some(app_data)) = (pkg_exe, app_data) else {
+        return Vec::new();
+    };
+    build_owl_user_data_dir_for_package_exe(&pkg_exe, &resolved_norm, app_data)
+        .map(|user_data_dir| vec![format!("--user-data-dir={}", user_data_dir)])
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "windows")]
+pub fn resolve_launch_extra_args(original_exe: &str, resolved_exe: &str) -> Vec<String> {
+    let app_data = std::env::var("APPDATA").ok();
+    resolve_launch_extra_args_with(
+        original_exe,
+        resolved_exe,
+        app_data.as_deref(),
+        find_appx_exe_by_family_or_alias,
+    )
+}
+
 #[cfg(target_os = "windows")]
 pub fn activate_msix_application(app_id: &str, exe_path: &str, args: &[String]) -> Result<u32, String> {
     use std::ffi::c_void;
@@ -1494,5 +1612,225 @@ mod tests {
         let resolved_exe =
             resolve_manifest_executable_in_xml(sample_xml, "chatgpt-desktop.exe", false);
         assert_eq!(resolved_exe, Some("app/ChatGPT.exe".to_string()));
+    }
+
+    #[test]
+    fn test_parse_owl_user_data_dir_name() {
+        let valid_ini = "\r\n# comment\r\n[Other]\r\nUserDataDirectoryName=Wrong\r\n\r\n[Owl]\r\n; ignore me\r\nUserDataDirectoryName = Codex \r\nAppVersion=26.1106.6628.0\r\n";
+        assert_eq!(
+            parse_owl_user_data_dir_name(valid_ini),
+            Some("Codex".to_string())
+        );
+
+        let quoted_ini = "[owl]\nuserdatadirectoryname=\" Codex \"\n";
+        assert_eq!(
+            parse_owl_user_data_dir_name(quoted_ini),
+            Some("Codex".to_string())
+        );
+
+        let bom_ini = "\u{FEFF}[Owl]\r\nUserDataDirectoryName=Codex\r\n";
+        assert_eq!(
+            parse_owl_user_data_dir_name(bom_ini),
+            Some("Codex".to_string())
+        );
+
+        assert_eq!(
+            parse_owl_user_data_dir_name("[Owl]\nUserDataDirectoryName=\"   \"\n"),
+            None
+        );
+        assert_eq!(
+            parse_owl_user_data_dir_name("[Other]\nUserDataDirectoryName=Codex\n"),
+            None
+        );
+        assert_eq!(
+            parse_owl_user_data_dir_name("[Owl]\nUserDataDirectoryName=../Codex\n"),
+            None
+        );
+        assert_eq!(
+            parse_owl_user_data_dir_name("[Owl]\nUserDataDirectoryName=foo\\bar\n"),
+            None
+        );
+        assert_eq!(
+            parse_owl_user_data_dir_name("[Owl]\nUserDataDirectoryName=C:Codex\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_build_owl_user_data_dir_for_package_exe() {
+        let unique = format!(
+            "local_ai_route_owl_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let winapps = root.join("WindowsApps");
+
+        let openai_app_dir = winapps
+            .join("OpenAI.Codex_26.1106.6628.0_x64__2p2nqsd0c76g0")
+            .join("app");
+        let openai_resources = openai_app_dir.join("resources");
+        std::fs::create_dir_all(&openai_resources).unwrap();
+        let pkg_exe = openai_app_dir.join("ChatGPT.exe");
+        std::fs::write(&pkg_exe, b"").unwrap();
+        let pkg_exe_str = pkg_exe.to_string_lossy().to_string();
+
+        // Missing owl-app.ini -> None
+        assert_eq!(
+            build_owl_user_data_dir_for_package_exe(
+                &pkg_exe_str,
+                r"C:\Users\test\AppData\Local\Microsoft\WindowsApps\chatgpt-desktop.exe",
+                r"C:\Users\test\AppData\Roaming\",
+            ),
+            None
+        );
+
+        std::fs::write(
+            openai_resources.join("owl-app.ini"),
+            "[Owl]\r\nUserDataDirectoryName=Codex\r\nAppVersion=26.1106.6628.0\r\n",
+        )
+        .unwrap();
+
+        // Alias stem differs -> explicit APPDATA\Codex\web\Codex
+        assert_eq!(
+            build_owl_user_data_dir_for_package_exe(
+                &pkg_exe_str,
+                r"C:\Users\test\AppData\Local\Microsoft\WindowsApps\chatgpt-desktop.exe",
+                r"C:\Users\test\AppData\Roaming\",
+            ),
+            Some(r"C:\Users\test\AppData\Roaming\Codex\web\Codex".to_string())
+        );
+
+        // Alias stem matches case-insensitively -> None
+        assert_eq!(
+            build_owl_user_data_dir_for_package_exe(
+                &pkg_exe_str,
+                r"C:\Users\test\AppData\Local\Microsoft\WindowsApps\codex.exe",
+                r"C:\Users\test\AppData\Roaming",
+            ),
+            None
+        );
+
+        // Non-OpenAI MSIX packages must not get Codex\web\* even if owl-app.ini exists
+        let other_app_dir = winapps
+            .join("OtherVendor.App_1.0.0.0_x64__1234567890abc")
+            .join("app");
+        let other_resources = other_app_dir.join("resources");
+        std::fs::create_dir_all(&other_resources).unwrap();
+        let other_exe = other_app_dir.join("Other.exe");
+        std::fs::write(&other_exe, b"").unwrap();
+        std::fs::write(
+            other_resources.join("owl-app.ini"),
+            "[Owl]\r\nUserDataDirectoryName=OtherData\r\n",
+        )
+        .unwrap();
+        assert_eq!(
+            build_owl_user_data_dir_for_package_exe(
+                &other_exe.to_string_lossy(),
+                r"C:\Users\test\AppData\Local\Microsoft\WindowsApps\other-alias.exe",
+                r"C:\Users\test\AppData\Roaming",
+            ),
+            None
+        );
+
+        // Non-ExecutionAlias resolved paths do not get extra args
+        assert!(resolve_launch_extra_args(&pkg_exe_str, &pkg_exe_str).is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_resolve_launch_extra_args_prefers_active_alias_and_normalizes_slashes() {
+        let unique = format!(
+            "local_ai_route_owl_resolve_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let winapps = root.join("WindowsApps");
+
+        let old_dir = winapps
+            .join("OpenAI.Codex_26.1023.6621.0_x64__2p2nqsd0c76g0")
+            .join("app");
+        let new_dir = winapps
+            .join("OpenAI.Codex_26.1106.6628.0_x64__2p2nqsd0c76g0")
+            .join("app");
+        std::fs::create_dir_all(old_dir.join("resources")).unwrap();
+        std::fs::create_dir_all(new_dir.join("resources")).unwrap();
+
+        let old_exe = old_dir.join("ChatGPT.exe");
+        let new_exe = new_dir.join("ChatGPT.exe");
+        std::fs::write(&old_exe, b"").unwrap();
+        std::fs::write(&new_exe, b"").unwrap();
+        std::fs::write(
+            old_dir.join("resources").join("owl-app.ini"),
+            "[Owl]\r\nUserDataDirectoryName=LegacyOwl\r\n",
+        )
+        .unwrap();
+        std::fs::write(
+            new_dir.join("resources").join("owl-app.ini"),
+            "[Owl]\r\nUserDataDirectoryName=Codex\r\n",
+        )
+        .unwrap();
+
+        let alias_fwd = "C:/Users/test/AppData/Local/Microsoft/WindowsApps/chatgpt-desktop.exe";
+        let old_exe_str = old_exe.to_string_lossy().to_string();
+        let new_exe_str = new_exe.to_string_lossy().to_string();
+
+        // Active alias lookup wins over stale-but-existing original_exe, and forward slashes work
+        let args = resolve_launch_extra_args_with(
+            &old_exe_str,
+            alias_fwd,
+            Some(r"C:\Users\test\AppData\Roaming"),
+            |query| {
+                assert_eq!(
+                    query,
+                    r"C:\Users\test\AppData\Local\Microsoft\WindowsApps\chatgpt-desktop.exe"
+                );
+                Some(new_exe_str.clone())
+            },
+        );
+        assert_eq!(
+            args,
+            vec![r"--user-data-dir=C:\Users\test\AppData\Roaming\Codex\web\Codex".to_string()]
+        );
+
+        // Fallback to existing original_exe when alias lookup yields None
+        let fallback_args = resolve_launch_extra_args_with(
+            &old_exe_str,
+            alias_fwd,
+            Some(r"C:\Users\test\AppData\Roaming"),
+            |_| None,
+        );
+        assert_eq!(
+            fallback_args,
+            vec![r"--user-data-dir=C:\Users\test\AppData\Roaming\Codex\web\LegacyOwl".to_string()]
+        );
+
+        // Missing APPDATA returns empty
+        let no_appdata = resolve_launch_extra_args_with(
+            &old_exe_str,
+            alias_fwd,
+            None,
+            |_| Some(new_exe_str.clone()),
+        );
+        assert!(no_appdata.is_empty());
+
+        // Non-existent stale original_exe + None lookup returns empty safely
+        let stale_missing = resolve_launch_extra_args_with(
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_1.0.0.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe",
+            alias_fwd,
+            Some(r"C:\Users\test\AppData\Roaming"),
+            |_| None,
+        );
+        assert!(stale_missing.is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

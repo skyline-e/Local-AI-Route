@@ -469,7 +469,11 @@ pub fn launch_target(spec: &TargetAppSpec, proxy: &ProxyConfig) -> Result<u32, S
         sync_gemini_profile_proxy(proxy, spec.proxy_enabled);
     }
 
-    let mut cli_args: Vec<String> = Vec::new();
+    let mut cli_args = crate::platforms::resolve_launch_extra_args(&spec.exe_path, &resolved_exe);
+    if !cli_args.is_empty() {
+        cmd.args(&cli_args);
+    }
+
     let mut env_vars: Vec<(String, String)> = Vec::new();
     if spec.proxy_enabled {
         let proxy_url = proxy.url();

@@ -24,6 +24,18 @@ pub fn resolve_executable_for_launch(path: &str) -> String {
     }
 }
 
+pub fn resolve_launch_extra_args(original_exe: &str, resolved_exe: &str) -> Vec<String> {
+    #[cfg(target_os = "windows")]
+    {
+        windows::resolve_launch_extra_args(original_exe, resolved_exe)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (original_exe, resolved_exe);
+        Vec::new()
+    }
+}
+
 pub fn discover_target_executable(app_id: &str) -> Option<String> {
     #[cfg(target_os = "windows")]
     {
