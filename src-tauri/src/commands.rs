@@ -1,6 +1,7 @@
 use crate::core::controller::{
-    ensure_stopped_before_relaunch, inspect_app_state, is_executable_present, launch_target,
-    refresh_processes_for_inspection, should_heal_builtin_path, stop_target, sync_gemini_profile_proxy,
+    ensure_stopped_before_relaunch, force_stop_target, graceful_stop_pids, inspect_app_state,
+    is_executable_present, launch_target, refresh_processes_for_inspection,
+    should_heal_builtin_path, snapshot_process_identities, sync_gemini_profile_proxy,
 };
 use crate::core::diagnostics::run_diagnostics as run_diag_internal;
 use crate::core::models::{AppRuntimeState, AppSettings, DiagReport, RunStatus, TargetAppSpec, TargetOverride};
@@ -201,16 +202,38 @@ pub async fn launch_app(
 }
 
 #[tauri::command]
-pub fn stop_app(app_id: String, force: bool, state: State<'_, AppState>) -> Result<(), String> {
-    let settings = safe_lock(&state.settings);
-    let mut sys = safe_lock(&state.sys);
-    refresh_processes_for_inspection(&mut sys, false);
+pub async fn stop_app(
+    app_id: String,
+    force: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let (target, seed_pids, seed_identities, is_en) = {
+        let settings = safe_lock(&state.settings);
+        let target = find_target_spec(&settings, &app_id)
+            .ok_or_else(|| format!("Target app '{}' not found", app_id))?;
 
-    let target = find_target_spec(&settings, &app_id)
-        .ok_or_else(|| format!("Target app '{}' not found", app_id))?;
+        let mut sys = safe_lock(&state.sys);
+        refresh_processes_for_inspection(&mut sys, false);
+        let runtime = inspect_app_state(&sys, &target, &settings.proxy);
+        let seed_identities = if force {
+            snapshot_process_identities(&sys, &runtime.pids)
+        } else {
+            std::collections::HashMap::new()
+        };
+        let is_en = settings.language == "en-US";
+        (target, runtime.pids, seed_identities, is_en)
+    };
 
-    let runtime = inspect_app_state(&sys, &target, &settings.proxy);
-    stop_target(&sys, &runtime.pids, force)
+    if !force {
+        tokio::task::spawn_blocking(move || graceful_stop_pids(&seed_pids))
+            .await
+            .map_err(|e| format!("Stop task error: {}", e))?;
+        return Ok(());
+    }
+
+    tokio::task::spawn_blocking(move || force_stop_target(&target, &seed_identities, is_en))
+        .await
+        .map_err(|e| format!("Force stop task error: {}", e))?
 }
 
 #[tauri::command]

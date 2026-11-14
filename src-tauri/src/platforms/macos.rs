@@ -106,16 +106,30 @@ pub fn discover_target_executable(app_id: &str) -> Option<String> {
 pub fn request_graceful_close(pids: &[u32]) -> bool {
     let mut sent = false;
     for &pid in pids {
-        if pid <= 1 {
+        if super::is_protected_pid(pid) {
             continue;
         }
+        let Ok(raw_pid) = i32::try_from(pid) else {
+            continue;
+        };
         unsafe {
-            if libc::kill(pid as i32, 15) == 0 {
+            if libc::kill(raw_pid, libc::SIGTERM) == 0 {
                 sent = true;
             }
         }
     }
     sent
+}
+
+#[cfg(target_os = "macos")]
+pub fn force_kill_pid(pid: u32) -> bool {
+    if super::is_protected_pid(pid) {
+        return false;
+    }
+    let Ok(raw_pid) = i32::try_from(pid) else {
+        return false;
+    };
+    unsafe { libc::kill(raw_pid, libc::SIGKILL) == 0 }
 }
 
 #[cfg(target_os = "macos")]

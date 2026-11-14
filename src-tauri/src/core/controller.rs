@@ -1,10 +1,10 @@
 use super::models::{AppRuntimeState, ProxyConfig, RunStatus, TargetAppSpec};
 use super::proxy::{build_proxy_env_vars, format_chromium_bypass_list, PROXY_ENV_KEYS};
-use crate::platforms::request_graceful_close;
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use crate::platforms::{force_kill_pid, is_protected_pid, request_graceful_close};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::process::Command;
-use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind};
 
 pub fn refresh_processes_for_inspection(sys: &mut System, include_env: bool) {
     let mut kind = ProcessRefreshKind::nothing()
@@ -249,8 +249,86 @@ fn is_same_app_family(spec_path: &Path, spec_path_norm: &str, exe_path: &Path, e
     false
 }
 
+fn is_process_alive(proc: &sysinfo::Process) -> bool {
+    !matches!(proc.status(), ProcessStatus::Zombie)
+}
+
+struct SpecMatchContext {
+    effective_exe: String,
+    spec_path_norm: String,
+    target_file_name: String,
+    raw_target_file_name: String,
+}
+
+impl SpecMatchContext {
+    fn from_spec(spec: &TargetAppSpec) -> Option<Self> {
+        if spec.exe_path.is_empty() {
+            return None;
+        }
+        let effective_exe = crate::platforms::resolve_executable_for_launch(&spec.exe_path);
+        let spec_path = Path::new(&effective_exe);
+        let spec_path_norm = effective_exe.replace('/', "\\").to_lowercase();
+        let target_file_name = spec_path
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let raw_target_file_name = Path::new(&spec.exe_path)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        Some(Self {
+            effective_exe,
+            spec_path_norm,
+            target_file_name,
+            raw_target_file_name,
+        })
+    }
+
+    fn matches_process(&self, process: &sysinfo::Process, cmd: &[String]) -> bool {
+        let spec_path = Path::new(&self.effective_exe);
+        let p_name = process.name().to_string_lossy().to_lowercase();
+
+        if let Some(exe) = process.exe() {
+            let exe_norm = exe.to_string_lossy().replace('/', "\\").to_lowercase();
+            if exe_norm == self.spec_path_norm {
+                return true;
+            }
+            if exe
+                .file_name()
+                .and_then(|f| f.to_str())
+                .map(|s| {
+                    let s_low = s.to_lowercase();
+                    is_matching_exe_name(&s_low, &self.target_file_name)
+                        || (!self.raw_target_file_name.is_empty()
+                            && is_matching_exe_name(&s_low, &self.raw_target_file_name))
+                })
+                .unwrap_or(false)
+            {
+                return is_same_app_family(spec_path, &self.spec_path_norm, exe, &exe_norm);
+            }
+            return false;
+        }
+
+        let name_matches = is_matching_exe_name(&p_name, &self.target_file_name)
+            || (!self.raw_target_file_name.is_empty()
+                && is_matching_exe_name(&p_name, &self.raw_target_file_name));
+        if name_matches {
+            if let Some(first_arg) = cmd.first() {
+                let cleaned_arg = first_arg.trim().trim_matches('"');
+                let cmd_exe = Path::new(cleaned_arg);
+                let cmd_exe_norm = cleaned_arg.replace('/', "\\").to_lowercase();
+                return cmd_exe_norm == self.spec_path_norm
+                    || is_same_app_family(spec_path, &self.spec_path_norm, cmd_exe, &cmd_exe_norm);
+            }
+        }
+        false
+    }
+}
+
 pub fn inspect_app_state(sys: &System, spec: &TargetAppSpec, proxy: &ProxyConfig) -> AppRuntimeState {
-    if spec.exe_path.is_empty() {
+    let Some(ctx) = SpecMatchContext::from_spec(spec) else {
         return AppRuntimeState {
             app_id: spec.id.clone(),
             status: RunStatus::Stopped,
@@ -259,69 +337,19 @@ pub fn inspect_app_state(sys: &System, spec: &TargetAppSpec, proxy: &ProxyConfig
             matched_proxy: String::new(),
             cmdline_preview: String::new(),
         };
-    }
-
-    let effective_exe_str = crate::platforms::resolve_executable_for_launch(&spec.exe_path);
-    let spec_path = Path::new(&effective_exe_str);
-    let spec_path_norm = effective_exe_str.replace('/', "\\").to_lowercase();
-    let target_file_name = spec_path
-        .file_name()
-        .and_then(|f| f.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    let raw_target_file_name = Path::new(&spec.exe_path)
-        .file_name()
-        .and_then(|f| f.to_str())
-        .unwrap_or("")
-        .to_lowercase();
+    };
 
     let mut all_candidate_pids = HashSet::new();
     let mut helper_pids = HashSet::new();
     let mut non_helper_candidates: BTreeMap<u32, Vec<String>> = BTreeMap::new();
 
     for (pid, process) in sys.processes() {
-        let p_name = process.name().to_string_lossy().to_lowercase();
+        if !is_process_alive(process) {
+            continue;
+        }
         let cmd: Vec<String> = process.cmd().iter().map(|s| s.to_string_lossy().to_string()).collect();
 
-        let exe_matches = if let Some(exe) = process.exe() {
-            let exe_norm = exe.to_string_lossy().replace('/', "\\").to_lowercase();
-            if exe_norm == spec_path_norm {
-                true
-            } else if exe
-                .file_name()
-                .and_then(|f| f.to_str())
-                .map(|s| {
-                    let s_low = s.to_lowercase();
-                    is_matching_exe_name(&s_low, &target_file_name)
-                        || (!raw_target_file_name.is_empty()
-                            && is_matching_exe_name(&s_low, &raw_target_file_name))
-                })
-                .unwrap_or(false)
-            {
-                is_same_app_family(spec_path, &spec_path_norm, exe, &exe_norm)
-            } else {
-                false
-            }
-        } else {
-            let name_matches = is_matching_exe_name(&p_name, &target_file_name)
-                || (!raw_target_file_name.is_empty()
-                    && is_matching_exe_name(&p_name, &raw_target_file_name));
-            if name_matches {
-                if let Some(first_arg) = cmd.first() {
-                    let cleaned_arg = first_arg.trim().trim_matches('"');
-                    let cmd_exe = Path::new(cleaned_arg);
-                    let cmd_exe_norm = cleaned_arg.replace('/', "\\").to_lowercase();
-                    cmd_exe_norm == spec_path_norm
-                        || is_same_app_family(spec_path, &spec_path_norm, cmd_exe, &cmd_exe_norm)
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        };
-
-        if !exe_matches {
+        if !ctx.matches_process(process, &cmd) {
             continue;
         }
 
@@ -552,22 +580,217 @@ pub fn launch_target(spec: &TargetAppSpec, proxy: &ProxyConfig) -> Result<u32, S
     }
 }
 
-pub fn stop_target(sys: &System, pids: &[u32], force: bool) -> Result<(), String> {
-    if pids.is_empty() {
-        return Ok(());
+/// Fingerprint used to guard against OS PID reuse across force-stop retries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessIdentity {
+    pub start_time: u64,
+    pub name_low: String,
+}
+
+impl ProcessIdentity {
+    fn from_process(proc: &sysinfo::Process) -> Self {
+        Self {
+            start_time: proc.start_time(),
+            name_low: proc.name().to_string_lossy().to_lowercase(),
+        }
     }
 
-    if !force {
-        request_graceful_close(pids);
+    fn matches(&self, proc: &sysinfo::Process) -> bool {
+        is_process_alive(proc)
+            && proc.start_time() == self.start_time
+            && proc.name().to_string_lossy().to_lowercase() == self.name_low
+    }
+}
+
+fn snapshot_single_identities(sys: &System, pids: &[u32]) -> HashMap<u32, ProcessIdentity> {
+    let mut map = HashMap::new();
+    for &pid in pids {
+        if is_protected_pid(pid) {
+            continue;
+        }
+        if let Some(proc) = sys.process(Pid::from_u32(pid)) {
+            if is_process_alive(proc) {
+                map.insert(pid, ProcessIdentity::from_process(proc));
+            }
+        }
+    }
+    map
+}
+
+pub fn snapshot_process_identities(sys: &System, root_pids: &[u32]) -> HashMap<u32, ProcessIdentity> {
+    if root_pids.is_empty() {
+        return HashMap::new();
+    }
+    let tree: Vec<u32> = collect_process_tree(sys, root_pids).into_iter().collect();
+    snapshot_single_identities(sys, &tree)
+}
+
+fn retain_live_identities(
+    sys: &System,
+    tracked: HashMap<u32, ProcessIdentity>,
+) -> HashMap<u32, ProcessIdentity> {
+    tracked
+        .into_iter()
+        .filter(|(pid, identity)| {
+            !is_protected_pid(*pid)
+                && sys
+                    .process(Pid::from_u32(*pid))
+                    .is_some_and(|proc| identity.matches(proc))
+        })
+        .collect()
+}
+
+fn matches_sidecar_process(
+    process_name: &str,
+    cmd_joined: &str,
+    patterns_low: &[String],
+    sidecar_regex: &regex::Regex,
+) -> bool {
+    let name_low = process_name.to_lowercase();
+    patterns_low.iter().any(|pat| name_low.contains(pat)) && sidecar_regex.is_match(cmd_joined)
+}
+
+pub fn collect_target_identities_for_force_kill(
+    sys: &System,
+    spec: &TargetAppSpec,
+) -> HashMap<u32, ProcessIdentity> {
+    let Some(ctx) = SpecMatchContext::from_spec(spec) else {
+        return HashMap::new();
+    };
+
+    let sidecar_regex =
+        if !spec.sidecar_cmdline_regex.is_empty() && !spec.child_process_patterns.is_empty() {
+            regex::Regex::new(&spec.sidecar_cmdline_regex).ok()
+        } else {
+            None
+        };
+    let patterns_low: Vec<String> = if sidecar_regex.is_some() {
+        spec.child_process_patterns
+            .iter()
+            .map(|p| p.to_lowercase())
+            .collect()
     } else {
-        let tree = collect_process_tree(sys, pids);
-        for pid in tree {
-            if let Some(proc) = sys.process(Pid::from_u32(pid)) {
+        Vec::new()
+    };
+
+    let mut seeds = Vec::new();
+    for (pid, process) in sys.processes() {
+        let pid_u32 = pid.as_u32();
+        if is_protected_pid(pid_u32) || !is_process_alive(process) {
+            continue;
+        }
+
+        let cmd: Vec<String> = process
+            .cmd()
+            .iter()
+            .map(|s| s.to_string_lossy().to_string())
+            .collect();
+
+        if ctx.matches_process(process, &cmd) {
+            seeds.push(pid_u32);
+            continue;
+        }
+
+        if let Some(ref re) = sidecar_regex {
+            let name = process.name().to_string_lossy();
+            let cmd_joined = cmd.join(" ");
+            if matches_sidecar_process(&name, &cmd_joined, &patterns_low, re) {
+                seeds.push(pid_u32);
+            }
+        }
+    }
+
+    snapshot_process_identities(sys, &seeds)
+}
+
+fn kill_pid_set(sys: &System, tracked: &HashMap<u32, ProcessIdentity>) {
+    for &pid in tracked.keys() {
+        if is_protected_pid(pid) {
+            continue;
+        }
+        #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+        {
+            let _ = force_kill_pid(pid);
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+        if let Some(proc) = sys.process(Pid::from_u32(pid)) {
+            if is_process_alive(proc) {
                 let _ = proc.kill();
             }
         }
     }
-    Ok(())
+    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+    let _ = sys;
+}
+
+/// Sends a graceful close signal (WM_CLOSE on Windows, SIGTERM on Unix) to the given PIDs.
+pub fn graceful_stop_pids(pids: &[u32]) {
+    if !pids.is_empty() {
+        request_graceful_close(pids);
+    }
+}
+
+/// Force-terminates the target app family, tracked child tree, and detached sidecars, verifying exit.
+pub fn force_stop_target(
+    spec: &TargetAppSpec,
+    seed_identities: &HashMap<u32, ProcessIdentity>,
+    is_en: bool,
+) -> Result<(), String> {
+    let mut sys = System::new();
+    refresh_processes_for_inspection(&mut sys, false);
+
+    let mut tracked = collect_target_identities_for_force_kill(&sys, spec);
+    if !seed_identities.is_empty() {
+        let live_seeds = retain_live_identities(&sys, seed_identities.clone());
+        let seed_pids: Vec<u32> = live_seeds.keys().copied().collect();
+        tracked.extend(live_seeds);
+        tracked.extend(snapshot_process_identities(&sys, &seed_pids));
+    }
+
+    if tracked.is_empty() {
+        return Ok(());
+    }
+
+    for _ in 0..12 {
+        kill_pid_set(&sys, &tracked);
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        refresh_processes_for_inspection(&mut sys, false);
+
+        tracked = retain_live_identities(&sys, tracked);
+        let live_pids: Vec<u32> = tracked.keys().copied().collect();
+        if !live_pids.is_empty() {
+            tracked.extend(snapshot_process_identities(&sys, &live_pids));
+        }
+        tracked.extend(collect_target_identities_for_force_kill(&sys, spec));
+
+        if tracked.is_empty() {
+            return Ok(());
+        }
+    }
+
+    let mut remaining: Vec<String> = tracked
+        .keys()
+        .filter_map(|&pid| {
+            sys.process(Pid::from_u32(pid))
+                .filter(|p| is_process_alive(p))
+                .map(|p| format!("{} (PID {})", p.name().to_string_lossy(), pid))
+        })
+        .collect();
+    remaining.sort();
+    remaining.truncate(5);
+
+    let summary = remaining.join(", ");
+    if is_en {
+        Err(format!(
+            "Failed to terminate remaining process(es) (may require elevated privileges): {}",
+            summary
+        ))
+    } else {
+        Err(format!(
+            "以下残留进程未能强制结束（可能权限不足或受系统保护）: {}",
+            summary
+        ))
+    }
 }
 
 pub fn ensure_stopped_before_relaunch(pids: &[u32], allow_force_kill: bool) -> bool {
@@ -577,26 +800,31 @@ pub fn ensure_stopped_before_relaunch(pids: &[u32], allow_force_kill: bool) -> b
 
     let mut sys = System::new();
     refresh_processes_for_inspection(&mut sys, false);
-    let mut tracked_tree = collect_process_tree(&sys, pids);
+    let root_identities = snapshot_single_identities(&sys, pids);
+    if root_identities.is_empty() {
+        return true;
+    }
+    let mut tracked_tree = snapshot_process_identities(&sys, pids);
 
     request_graceful_close(pids);
 
     for _ in 0..6 {
         std::thread::sleep(std::time::Duration::from_millis(200));
         refresh_processes_for_inspection(&mut sys, false);
-        let current_tree = collect_process_tree(&sys, pids);
-        tracked_tree.extend(current_tree);
+        tracked_tree = retain_live_identities(&sys, tracked_tree);
 
-        let any_root_alive = pids.iter().any(|&p| sys.process(Pid::from_u32(p)).is_some());
-        if !any_root_alive {
-            // Clean up any leftover orphaned helper processes from the pre-close tree snapshot
-            for &pid in &tracked_tree {
-                if let Some(proc) = sys.process(Pid::from_u32(pid)) {
-                    let _ = proc.kill();
-                }
+        let live_roots: Vec<u32> = retain_live_identities(&sys, root_identities.clone())
+            .into_keys()
+            .collect();
+        if live_roots.is_empty() {
+            // Clean up any leftover orphaned helper processes from the verified pre-close tree
+            if !tracked_tree.is_empty() {
+                kill_pid_set(&sys, &tracked_tree);
+                std::thread::sleep(std::time::Duration::from_millis(80));
             }
             return true;
         }
+        tracked_tree.extend(snapshot_process_identities(&sys, &live_roots));
     }
 
     if !allow_force_kill {
@@ -604,15 +832,20 @@ pub fn ensure_stopped_before_relaunch(pids: &[u32], allow_force_kill: bool) -> b
     }
 
     // If app minimized to tray on WM_CLOSE or user explicitly confirmed force restart, terminate tracked tree
-    refresh_processes_for_inspection(&mut sys, false);
-    tracked_tree.extend(collect_process_tree(&sys, pids));
-    for pid in tracked_tree {
-        if let Some(proc) = sys.process(Pid::from_u32(pid)) {
-            let _ = proc.kill();
+    for _ in 0..8 {
+        tracked_tree = retain_live_identities(&sys, tracked_tree);
+        if tracked_tree.is_empty() {
+            return true;
         }
+        let live_pids: Vec<u32> = tracked_tree.keys().copied().collect();
+        tracked_tree.extend(snapshot_process_identities(&sys, &live_pids));
+
+        kill_pid_set(&sys, &tracked_tree);
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        refresh_processes_for_inspection(&mut sys, false);
     }
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    true
+
+    retain_live_identities(&sys, tracked_tree).is_empty()
 }
 
 #[cfg(test)]
@@ -641,5 +874,143 @@ mod tests {
             "factory",
             r"C:\Users\apuser\AppData\Local\Factory\app-1.6.0\factory-desktop.exe"
         ));
+    }
+
+    #[test]
+    fn test_spec_match_context_and_sidecar_matching() {
+        let mut spec = crate::core::presets::builtin_presets()
+            .into_iter()
+            .find(|s| s.id == "antigravity-app")
+            .expect("antigravity-app preset");
+        assert!(SpecMatchContext::from_spec(&spec).is_none());
+
+        spec.exe_path = r"C:\Apps\Antigravity\Antigravity.exe".into();
+        let ctx = SpecMatchContext::from_spec(&spec).expect("non-empty exe_path");
+        assert_eq!(ctx.target_file_name, "antigravity.exe");
+
+        let patterns_low: Vec<String> = spec
+            .child_process_patterns
+            .iter()
+            .map(|p| p.to_lowercase())
+            .collect();
+        let re = regex::Regex::new(&spec.sidecar_cmdline_regex).expect("valid regex");
+        assert!(matches_sidecar_process(
+            "language_server_windows_x64.exe",
+            "language_server_windows_x64.exe --standalone --port 8080",
+            &patterns_low,
+            &re
+        ));
+        assert!(!matches_sidecar_process(
+            "language_server_windows_x64.exe",
+            "language_server_windows_x64.exe --subclient_type=ide",
+            &patterns_low,
+            &re
+        ));
+        assert!(!matches_sidecar_process(
+            "other_binary.exe",
+            "other_binary.exe --standalone",
+            &patterns_low,
+            &re
+        ));
+    }
+
+    fn spawn_test_child() -> std::process::Child {
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            Command::new("ping")
+                .args(["-n", "30", "127.0.0.1"])
+                .creation_flags(0x08000000)
+                .spawn()
+                .expect("spawn ping")
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .expect("spawn sleep")
+        }
+    }
+
+    #[test]
+    fn test_identity_guard_and_force_kill_child() {
+        assert!(is_protected_pid(0));
+        assert!(is_protected_pid(1));
+        assert!(is_protected_pid(std::process::id()));
+        #[cfg(target_os = "windows")]
+        assert!(is_protected_pid(4));
+
+        let mut child = spawn_test_child();
+        let child_pid = child.id();
+        let mut sys = System::new();
+        refresh_processes_for_inspection(&mut sys, false);
+
+        let mut identities = snapshot_process_identities(&sys, &[0, 1, std::process::id(), child_pid]);
+        assert!(!identities.contains_key(&0));
+        assert!(!identities.contains_key(&1));
+        assert!(!identities.contains_key(&std::process::id()));
+        let child_id = identities.get(&child_pid).cloned().expect("child identity captured");
+
+        // Exact identity matches while live
+        let kept = retain_live_identities(&sys, identities.clone());
+        assert!(kept.contains_key(&child_pid));
+
+        // Recycled PID with different start_time or process name must be dropped
+        identities.insert(
+            child_pid,
+            ProcessIdentity {
+                start_time: child_id.start_time.saturating_add(1),
+                name_low: child_id.name_low.clone(),
+            },
+        );
+        assert!(!retain_live_identities(&sys, identities.clone()).contains_key(&child_pid));
+
+        identities.insert(
+            child_pid,
+            ProcessIdentity {
+                start_time: child_id.start_time,
+                name_low: "unrelated.exe".into(),
+            },
+        );
+        assert!(!retain_live_identities(&sys, identities).contains_key(&child_pid));
+
+        // Force kill and verify post-exit retention is empty
+        assert!(force_kill_pid(child_pid));
+        let _ = child.wait();
+        refresh_processes_for_inspection(&mut sys, false);
+        let mut after_map = HashMap::new();
+        after_map.insert(child_pid, child_id);
+        assert!(retain_live_identities(&sys, after_map).is_empty());
+    }
+
+    #[test]
+    fn test_force_stop_target_kills_seeded_child() {
+        let mut child = spawn_test_child();
+        let child_pid = child.id();
+
+        let mut sys = System::new();
+        refresh_processes_for_inspection(&mut sys, false);
+        let seeds = snapshot_process_identities(&sys, &[child_pid]);
+        assert!(seeds.contains_key(&child_pid));
+
+        let empty_spec = TargetAppSpec {
+            id: "test-seeded".into(),
+            name: "Test".into(),
+            name_en: "Test".into(),
+            builtin: false,
+            exe_path: String::new(),
+            proxy_enabled: false,
+            probe_urls: vec![],
+            child_process_patterns: vec![],
+            sidecar_cmdline_regex: String::new(),
+            warn_unsaved_on_kill: false,
+        };
+
+        assert!(force_stop_target(&empty_spec, &seeds, true).is_ok());
+        let _ = child.wait();
+
+        refresh_processes_for_inspection(&mut sys, false);
+        assert!(retain_live_identities(&sys, seeds).is_empty());
     }
 }

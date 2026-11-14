@@ -21,6 +21,7 @@ import {
   Play,
   RotateCw,
   Square,
+  OctagonX,
   Activity,
   ExternalLink,
   ChevronDown,
@@ -69,6 +70,7 @@ const settings = ref<AppSettings>({
 const effectiveTargets = ref<TargetAppSpec[]>([]);
 const appStatuses = ref<Record<string, AppRuntimeState>>({});
 const launchingIds = ref<Record<string, boolean>>({});
+const stoppingIds = ref<Record<string, "stop" | "force" | undefined>>({});
 const showNoProxy = ref(false);
 const scannedPorts = ref<number[]>([]);
 const isScanning = ref(false);
@@ -115,11 +117,11 @@ function showToast(message: string, type: "success" | "error" | "warn" | "info" 
 const confirmStopModal = ref<{
   open: boolean;
   target: TargetAppSpec | null;
-  relaunchAfterStop: boolean;
+  mode: "stop" | "force_stop" | "restart";
 }>({
   open: false,
   target: null,
-  relaunchAfterStop: false,
+  mode: "stop",
 });
 
 // Confirm Remove Custom App Modal
@@ -315,21 +317,21 @@ async function handleAutoDetect(appId: string) {
 }
 
 function handleLaunch(target: TargetAppSpec) {
-  if (launchingIds.value[target.id]) return;
+  if (launchingIds.value[target.id] || stoppingIds.value[target.id]) return;
   const status = appStatuses.value[target.id]?.status;
   const needsRestart = status === "restart_needed" || status === "running_unproxied";
   if (needsRestart && target.warn_unsaved_on_kill) {
-    confirmStopModal.value = { open: true, target, relaunchAfterStop: true };
+    confirmStopModal.value = { open: true, target, mode: "restart" };
   } else {
     executeLaunch(target);
   }
 }
 
 async function executeLaunch(target: TargetAppSpec, forceRestart?: boolean) {
-  if (launchingIds.value[target.id]) return;
+  if (launchingIds.value[target.id] || stoppingIds.value[target.id]) return;
   launchingIds.value[target.id] = true;
   try {
-    confirmStopModal.value = { open: false, target: null, relaunchAfterStop: false };
+    confirmStopModal.value = { open: false, target: null, mode: "stop" };
     await invoke("launch_app", { appId: target.id, forceRestart });
     await refreshTargets();
     await refreshStatuses();
@@ -342,22 +344,37 @@ async function executeLaunch(target: TargetAppSpec, forceRestart?: boolean) {
 }
 
 function handleStop(target: TargetAppSpec) {
+  if (launchingIds.value[target.id] || stoppingIds.value[target.id]) return;
   if (target.warn_unsaved_on_kill) {
-    confirmStopModal.value = { open: true, target, relaunchAfterStop: false };
+    confirmStopModal.value = { open: true, target, mode: "stop" };
   } else {
     executeStop(target, false);
   }
 }
 
+function handleForceStop(target: TargetAppSpec) {
+  if (launchingIds.value[target.id] || stoppingIds.value[target.id]) return;
+  if (target.warn_unsaved_on_kill) {
+    confirmStopModal.value = { open: true, target, mode: "force_stop" };
+  } else {
+    executeStop(target, true);
+  }
+}
+
 async function executeStop(target: TargetAppSpec, force = false) {
+  if (launchingIds.value[target.id] || stoppingIds.value[target.id]) return;
+  stoppingIds.value[target.id] = force ? "force" : "stop";
+  confirmStopModal.value = { open: false, target: null, mode: "stop" };
   try {
     await invoke("stop_app", { appId: target.id, force });
     await refreshStatuses();
     showToast(force ? t("toast_force_stopped") : t("toast_graceful_stopped"), "info");
   } catch (err) {
-    showToast(`Stop failed: ${err}`, "error");
+    await refreshStatuses();
+    const label = force ? t("toast_force_stop_failed") : t("toast_stop_failed");
+    showToast(`${label}: ${err}`, "error", 5000);
   } finally {
-    confirmStopModal.value = { open: false, target: null, relaunchAfterStop: false };
+    stoppingIds.value[target.id] = undefined;
   }
 }
 
@@ -887,7 +904,7 @@ onUnmounted(() => {
         <div>
           <h1 class="text-base font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
             {{ t("app_title") }}
-            <span class="text-[10px] px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300 font-mono">v0.2.11</span>
+            <span class="text-[10px] px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300 font-mono">v0.2.12</span>
           </h1>
           <p class="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">{{ t("app_subtitle") }}</p>
         </div>
@@ -1009,7 +1026,10 @@ onUnmounted(() => {
               <!-- Default state badge -->
               <span
                 :class="[
-                  'group-hover:hidden text-[10px] font-mono px-1.5 py-0.5 rounded border transition',
+                  'text-[10px] font-mono px-1.5 py-0.5 rounded border transition',
+                  launchingIds[target.id] || stoppingIds[target.id]
+                    ? 'hidden'
+                    : 'group-hover:hidden group-focus-within:hidden',
                   statusColor(appStatuses[target.id]?.status)
                 ]"
               >
@@ -1017,22 +1037,42 @@ onUnmounted(() => {
               </span>
 
               <!-- Hover state quick action button -->
-              <div class="hidden group-hover:flex group-focus-within:flex items-center gap-1" @click.stop>
-                <!-- Stop button if running -->
-                <button
-                  v-if="appStatuses[target.id]?.status && appStatuses[target.id]?.status !== 'stopped'"
-                  @click.stop="handleStop(target)"
-                  class="p-1 rounded bg-rose-100 hover:bg-rose-200 dark:bg-rose-950/60 dark:hover:bg-rose-900 text-rose-600 dark:text-rose-400 transition"
-                  :title="t('quick_stop')"
-                >
-                  <Square class="w-3 h-3 fill-current" />
-                </button>
+              <div
+                :class="[
+                  'items-center gap-1',
+                  launchingIds[target.id] || stoppingIds[target.id]
+                    ? 'flex'
+                    : 'hidden group-hover:flex group-focus-within:flex'
+                ]"
+                @click.stop
+              >
+                <!-- Stop & Force Kill buttons if running -->
+                <template v-if="appStatuses[target.id]?.status && appStatuses[target.id]?.status !== 'stopped'">
+                  <button
+                    @click.stop="handleStop(target)"
+                    :disabled="Boolean(stoppingIds[target.id] || launchingIds[target.id])"
+                    class="p-1 rounded bg-slate-100 hover:bg-slate-200 dark:bg-slate-700/70 dark:hover:bg-slate-600 text-slate-600 dark:text-slate-300 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                    :title="t('quick_stop')"
+                  >
+                    <RotateCw v-if="stoppingIds[target.id] === 'stop'" class="w-3 h-3 animate-spin" />
+                    <Square v-else class="w-3 h-3 fill-current" />
+                  </button>
+                  <button
+                    @click.stop="handleForceStop(target)"
+                    :disabled="Boolean(stoppingIds[target.id] || launchingIds[target.id])"
+                    class="p-1 rounded bg-rose-100 hover:bg-rose-200 dark:bg-rose-950/60 dark:hover:bg-rose-900 text-rose-600 dark:text-rose-400 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                    :title="t('quick_force_kill')"
+                  >
+                    <RotateCw v-if="stoppingIds[target.id] === 'force'" class="w-3 h-3 animate-spin" />
+                    <OctagonX v-else class="w-3 h-3" />
+                  </button>
+                </template>
 
                 <!-- Launch / Restart button -->
                 <button
                   v-else
                   @click.stop="handleLaunch(target)"
-                  :disabled="Boolean(launchingIds[target.id])"
+                  :disabled="Boolean(launchingIds[target.id] || stoppingIds[target.id])"
                   class="p-1 rounded bg-emerald-100 hover:bg-emerald-200 dark:bg-emerald-950/60 dark:hover:bg-emerald-900 text-emerald-600 dark:text-emerald-400 transition disabled:opacity-50 disabled:cursor-not-allowed"
                   :title="t('quick_launch')"
                 >
@@ -1173,7 +1213,7 @@ onUnmounted(() => {
         <!-- VIEW 2: Selected App Details -->
         <template v-else-if="currentTarget">
           <!-- App Detail Header & Primary Action Toolbar -->
-          <div class="flex items-center justify-between border-b border-slate-100 dark:border-slate-700/60 pb-3 shrink-0">
+          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-700/60 pb-3 shrink-0">
             <div class="flex items-center gap-3">
               <div>
                 <div class="flex items-center gap-2">
@@ -1193,14 +1233,14 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <!-- Actions (Launch, Stop, Diag, Shortcut, Delete) -->
-            <div class="flex items-center gap-2">
+            <!-- Actions (Launch, Stop, Force Kill, Diag, Shortcut, Delete) -->
+            <div class="flex flex-wrap items-center gap-2">
               <!-- Launch / Restart -->
               <button
                 v-if="appStatuses[currentTarget.id]?.status === 'restart_needed' || appStatuses[currentTarget.id]?.status === 'running_unproxied'"
                 @click="handleLaunch(currentTarget)"
-                :disabled="Boolean(launchingIds[currentTarget.id])"
-                class="px-4 py-2 text-xs font-semibold rounded-lg bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 shadow-sm transition"
+                :disabled="Boolean(launchingIds[currentTarget.id] || stoppingIds[currentTarget.id])"
+                class="px-4 py-2 text-xs font-semibold rounded-lg bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 whitespace-nowrap shadow-sm transition"
               >
                 <RotateCw :class="['w-3.5 h-3.5', launchingIds[currentTarget.id] ? 'animate-spin' : '']" />
                 {{ t("btn_restart") }}
@@ -1208,29 +1248,43 @@ onUnmounted(() => {
               <button
                 v-else
                 @click="handleLaunch(currentTarget)"
-                :disabled="Boolean(launchingIds[currentTarget.id])"
-                class="px-4 py-2 text-xs font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 shadow-sm transition"
+                :disabled="Boolean(launchingIds[currentTarget.id] || stoppingIds[currentTarget.id])"
+                class="px-4 py-2 text-xs font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 whitespace-nowrap shadow-sm transition"
               >
                 <RotateCw v-if="launchingIds[currentTarget.id]" class="w-3.5 h-3.5 animate-spin" />
                 <Play v-else class="w-3.5 h-3.5" />
                 {{ t("btn_launch") }}
               </button>
 
-              <!-- Stop Button -->
-              <button
-                v-if="appStatuses[currentTarget.id]?.status !== 'stopped'"
-                @click="handleStop(currentTarget)"
-                class="px-3.5 py-2 text-xs font-medium rounded-lg border border-rose-300 dark:border-rose-800/80 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 flex items-center gap-1.5 transition"
-              >
-                <Square class="w-3.5 h-3.5" />
-                {{ t("btn_stop") }}
-              </button>
+              <!-- Stop & Force Kill Buttons -->
+              <template v-if="appStatuses[currentTarget.id]?.status && appStatuses[currentTarget.id]?.status !== 'stopped'">
+                <button
+                  @click="handleStop(currentTarget)"
+                  :disabled="Boolean(stoppingIds[currentTarget.id] || launchingIds[currentTarget.id])"
+                  class="px-3.5 py-2 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700/60 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 whitespace-nowrap transition"
+                  :title="t('btn_stop_tip')"
+                >
+                  <RotateCw v-if="stoppingIds[currentTarget.id] === 'stop'" class="w-3.5 h-3.5 animate-spin" />
+                  <Square v-else class="w-3.5 h-3.5" />
+                  {{ t("btn_stop") }}
+                </button>
+                <button
+                  @click="handleForceStop(currentTarget)"
+                  :disabled="Boolean(stoppingIds[currentTarget.id] || launchingIds[currentTarget.id])"
+                  class="px-3.5 py-2 text-xs font-medium rounded-lg border border-rose-400/80 dark:border-rose-700 bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 hover:bg-rose-600 hover:text-white dark:hover:bg-rose-700 dark:hover:text-white disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 whitespace-nowrap transition"
+                  :title="t('btn_force_kill_tip')"
+                >
+                  <RotateCw v-if="stoppingIds[currentTarget.id] === 'force'" class="w-3.5 h-3.5 animate-spin" />
+                  <OctagonX v-else class="w-3.5 h-3.5" />
+                  {{ t("btn_force_kill") }}
+                </button>
+              </template>
 
               <!-- Diagnostics Button -->
               <button
                 @click="handleRunDiagnostics(currentTarget)"
                 :disabled="isRunningDiag"
-                class="px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                class="px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5 whitespace-nowrap transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Activity :class="['w-3.5 h-3.5 text-sky-500', isRunningDiag ? 'animate-spin' : '']" />
                 {{ isRunningDiag ? t("diag_running") : t("btn_diagnostics") }}
@@ -1239,7 +1293,7 @@ onUnmounted(() => {
               <!-- Desktop Shortcut -->
               <button
                 @click="handleCreateShortcut(currentTarget)"
-                class="px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5 transition"
+                class="px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1.5 whitespace-nowrap transition"
                 :title="t('btn_shortcut_tip')"
               >
                 <ExternalLink class="w-3.5 h-3.5 text-indigo-500" />
@@ -1844,11 +1898,11 @@ onUnmounted(() => {
       <div class="bg-white dark:bg-slate-800 rounded-xl shadow-2xl border border-amber-500/30 dark:border-amber-500/30 max-w-md w-full p-6 space-y-4 animate-in fade-in zoom-in-95 duration-150">
         <div class="flex items-center gap-2.5 text-amber-600 dark:text-amber-400 font-bold text-base">
           <AlertTriangle class="w-5 h-5" />
-          <h3>{{ t("warn_stop_title") }}</h3>
+          <h3>{{ confirmStopModal.mode === 'force_stop' ? t("warn_force_stop_title") : t("warn_stop_title") }}</h3>
         </div>
         <p class="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
           {{ currentLang === 'en-US' && confirmStopModal.target.name_en ? confirmStopModal.target.name_en : confirmStopModal.target.name }}：
-          {{ t("warn_stop_desc") }}
+          {{ confirmStopModal.mode === 'force_stop' ? t("warn_force_stop_desc") : t("warn_stop_desc") }}
         </p>
         <div class="flex items-center justify-end gap-2 border-t border-slate-100 dark:border-slate-700 pt-3">
           <button
@@ -1858,13 +1912,14 @@ onUnmounted(() => {
             {{ t("btn_cancel") }}
           </button>
           <button
-            @click="confirmStopModal.relaunchAfterStop ? executeLaunch(confirmStopModal.target, false) : executeStop(confirmStopModal.target, false)"
+            v-if="confirmStopModal.mode !== 'force_stop'"
+            @click="confirmStopModal.mode === 'restart' ? executeLaunch(confirmStopModal.target, false) : executeStop(confirmStopModal.target, false)"
             class="px-3.5 py-1.5 text-xs font-medium rounded-lg bg-sky-600 text-white hover:bg-sky-700 shadow-sm"
           >
             {{ t("btn_confirm_close") }}
           </button>
           <button
-            @click="confirmStopModal.relaunchAfterStop ? executeLaunch(confirmStopModal.target, true) : executeStop(confirmStopModal.target, true)"
+            @click="confirmStopModal.mode === 'restart' ? executeLaunch(confirmStopModal.target, true) : executeStop(confirmStopModal.target, true)"
             class="px-3.5 py-1.5 text-xs font-medium rounded-lg bg-rose-600 text-white hover:bg-rose-700 shadow-sm"
           >
             {{ t("btn_force_kill") }}

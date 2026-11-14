@@ -76,6 +76,39 @@ pub fn request_graceful_close(pids: &[u32]) -> bool {
     }
 }
 
+pub fn is_protected_pid(pid: u32) -> bool {
+    #[cfg(target_os = "windows")]
+    let system_pid = pid <= 4;
+    #[cfg(not(target_os = "windows"))]
+    let system_pid = pid <= 1;
+
+    system_pid || pid == std::process::id()
+}
+
+pub fn force_kill_pid(pid: u32) -> bool {
+    if is_protected_pid(pid) {
+        return false;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        windows::force_kill_pid(pid)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::force_kill_pid(pid)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux::force_kill_pid(pid)
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 pub fn get_process_tcp_connections(
     pids: &std::collections::HashSet<u32>,
     proxy_port: u16,

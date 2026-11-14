@@ -1378,11 +1378,15 @@ pub fn request_graceful_close(pids: &[u32]) -> bool {
         closed_any: bool,
     }
 
+    if pids.iter().all(|&pid| super::is_protected_pid(pid)) {
+        return false;
+    }
+
     unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let ctx = &mut *(lparam.0 as *mut Context);
         let mut proc_id: u32 = 0;
         GetWindowThreadProcessId(hwnd, Some(&mut proc_id));
-        if ctx.pids.contains(&proc_id) {
+        if !super::is_protected_pid(proc_id) && ctx.pids.contains(&proc_id) {
             let is_visible = IsWindowVisible(hwnd).as_bool();
             let is_root = GetAncestor(hwnd, GA_ROOT) == hwnd;
             if is_visible || is_root {
@@ -1402,6 +1406,27 @@ pub fn request_graceful_close(pids: &[u32]) -> bool {
         let _ = EnumWindows(Some(enum_proc), LPARAM(&mut ctx as *mut _ as isize));
     }
     ctx.closed_any
+}
+
+#[cfg(target_os = "windows")]
+pub fn force_kill_pid(pid: u32) -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+
+    if super::is_protected_pid(pid) {
+        return false;
+    }
+
+    unsafe {
+        match OpenProcess(PROCESS_TERMINATE, false, pid) {
+            Ok(handle) => {
+                let terminated = TerminateProcess(handle, 1).is_ok();
+                let _ = CloseHandle(handle);
+                terminated
+            }
+            Err(_) => false,
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
