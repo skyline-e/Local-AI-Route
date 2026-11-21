@@ -1,7 +1,8 @@
 use crate::core::controller::{
-    ensure_stopped_before_relaunch, force_stop_target, graceful_stop_pids, inspect_app_state,
-    is_executable_present, launch_target, refresh_processes_for_inspection,
-    should_heal_builtin_path, snapshot_process_identities, sync_gemini_profile_proxy,
+    collect_target_identities_for_force_kill, ensure_stopped_before_relaunch, force_stop_target,
+    graceful_stop_pids, inspect_app_state, is_executable_present, launch_target,
+    refresh_processes_for_inspection, should_heal_builtin_path, snapshot_process_identities,
+    sync_gemini_profile_proxy,
 };
 use crate::core::diagnostics::run_diagnostics as run_diag_internal;
 use crate::core::models::{AppRuntimeState, AppSettings, DiagReport, RunStatus, TargetAppSpec, TargetOverride};
@@ -255,7 +256,7 @@ pub fn create_shortcut(app_id: String, state: State<'_, AppState>) -> Result<Str
     create_desktop_shortcut(&target.id, &target.name, &target.exe_path)
 }
 
-use crate::accounts::models::{AccountProfile, AccountQuota, AccountSwitchResult};
+use crate::accounts::models::{AccountProfile, AccountQuota, AccountSwitchResult, ResetLoginResult};
 
 #[tauri::command]
 pub fn get_accounts(app_id: String) -> Result<Vec<AccountProfile>, String> {
@@ -357,6 +358,75 @@ pub fn prepare_new_claude_login() -> Result<String, String> {
 #[tauri::command]
 pub fn prepare_new_factory_login() -> Result<String, String> {
     crate::accounts::factory::prepare_new_factory_login()
+}
+
+#[tauri::command]
+pub async fn reset_app_login_state(
+    app_id: String,
+    state: State<'_, AppState>,
+) -> Result<ResetLoginResult, String> {
+    let (target_spec, pids, seed_identities, running_sibling_name, is_en) = {
+        let mut settings = safe_lock(&state.settings);
+        let target = resolve_and_heal_target(&mut settings, &app_id).ok();
+        let is_en = settings.language == "en-US";
+
+        let sibling_id = match app_id.as_str() {
+            "antigravity-app" => Some("antigravity-ide"),
+            "antigravity-ide" => Some("antigravity-app"),
+            _ => None,
+        };
+        let sibling_target = sibling_id.and_then(|sid| resolve_and_heal_target(&mut settings, sid).ok());
+
+        let mut sys = safe_lock(&state.sys);
+        refresh_processes_for_inspection(&mut sys, false);
+
+        let running_sibling_name = sibling_target.and_then(|sib| {
+            let runtime = inspect_app_state(&sys, &sib, &settings.proxy);
+            let has_sibling_procs = !runtime.pids.is_empty()
+                || !collect_target_identities_for_force_kill(&sys, &sib).is_empty();
+            if has_sibling_procs {
+                Some(if is_en && !sib.name_en.is_empty() {
+                    sib.name_en
+                } else {
+                    sib.name
+                })
+            } else {
+                None
+            }
+        });
+
+        let (pids, seed_identities) = if let Some(ref t) = target {
+            let runtime = inspect_app_state(&sys, t, &settings.proxy);
+            let running_pids = if matches!(
+                runtime.status,
+                RunStatus::RunningProxied
+                    | RunStatus::RunningDirect
+                    | RunStatus::RunningUnproxied
+                    | RunStatus::RestartNeeded
+            ) {
+                runtime.pids
+            } else {
+                vec![]
+            };
+            let mut identities = snapshot_process_identities(&sys, &running_pids);
+            identities.extend(collect_target_identities_for_force_kill(&sys, t));
+            (running_pids, identities)
+        } else {
+            (vec![], std::collections::HashMap::new())
+        };
+
+        (target, pids, seed_identities, running_sibling_name, is_en)
+    };
+
+    crate::accounts::reset_app_login_state(
+        &app_id,
+        target_spec,
+        pids,
+        seed_identities,
+        running_sibling_name,
+        is_en,
+    )
+    .await
 }
 
 use crate::accounts::oauth::{OAuthPollResponse, OAuthStartInfo};

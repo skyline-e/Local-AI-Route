@@ -36,6 +36,93 @@ pub fn write_auth_json(content: &str) -> Result<(), String> {
     std::fs::write(&path, content).map_err(|e| format!("Failed to write auth.json: {}", e))
 }
 
+fn collect_codex_web_profiles(roaming_root: &std::path::Path, dirs_list: &mut Vec<PathBuf>) {
+    let codex_web = roaming_root.join("Codex").join("web");
+    if let Ok(entries) = std::fs::read_dir(&codex_web) {
+        for entry in entries.flatten() {
+            let web_profile = entry.path();
+            if web_profile.is_dir() {
+                if !dirs_list.contains(&web_profile) {
+                    dirs_list.push(web_profile.clone());
+                }
+                let default_dir = web_profile.join("Default");
+                if default_dir.is_dir() && !dirs_list.contains(&default_dir) {
+                    dirs_list.push(default_dir);
+                }
+            }
+        }
+    }
+}
+
+fn candidate_chatgpt_profile_dirs() -> Vec<PathBuf> {
+    let mut dirs_list = Vec::new();
+
+    if let Some(config_dir) = dirs::config_dir() {
+        for sub in &["Codex", "ChatGPT", "chatgpt-desktop", "com.openai.chat"] {
+            let p = config_dir.join(sub);
+            if p.is_dir() && !dirs_list.contains(&p) {
+                dirs_list.push(p);
+            }
+        }
+
+        // OpenAI Codex / ChatGPT Owl webview user-data directories under %APPDATA%\Codex\web\*
+        collect_codex_web_profiles(&config_dir, &mut dirs_list);
+    }
+
+    #[cfg(target_os = "windows")]
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let packages = PathBuf::from(local).join("Packages");
+        if let Ok(entries) = std::fs::read_dir(&packages) {
+            for entry in entries.flatten() {
+                let fname = entry.file_name().to_string_lossy().to_lowercase();
+                if fname.starts_with("openai.") {
+                    let roaming = entry.path().join("LocalCache").join("Roaming");
+                    for sub in &["Codex", "ChatGPT"] {
+                        let p = roaming.join(sub);
+                        if p.is_dir() && !dirs_list.contains(&p) {
+                            dirs_list.push(p);
+                        }
+                    }
+                    collect_codex_web_profiles(&roaming, &mut dirs_list);
+                }
+            }
+        }
+    }
+
+    dirs_list
+}
+
+pub(crate) fn clear_live_credentials_in_paths(
+    auth_path: &std::path::Path,
+    profile_dirs: &[PathBuf],
+) -> Result<Vec<String>, String> {
+    let mut cleared = Vec::new();
+    let mut failures = Vec::new();
+
+    // 1. Delete ~/.codex/auth.json (or $CODEX_HOME/auth.json)
+    super::remove_file_strict(auth_path, &mut cleared, &mut failures);
+
+    // 2. Clear ChatGPT / Codex desktop Chromium cookies & web storage (preserving Preferences & history)
+    for profile_dir in profile_dirs {
+        super::remove_chromium_cookie_files_strict(profile_dir, &mut cleared, &mut failures);
+        for storage_dir_name in &["Local Storage", "Session Storage"] {
+            super::remove_dir_all_strict(
+                &profile_dir.join(storage_dir_name),
+                &mut cleared,
+                &mut failures,
+            );
+        }
+    }
+
+    super::finalize_clear_result(cleared, failures)
+}
+
+pub fn clear_live_credentials() -> Result<Vec<String>, String> {
+    let auth_path = get_active_auth_path();
+    let profile_dirs = candidate_chatgpt_profile_dirs();
+    clear_live_credentials_in_paths(&auth_path, &profile_dirs)
+}
+
 pub struct DecodedJwtIdentity {
     pub email: Option<String>,
     pub account_id: Option<String>,

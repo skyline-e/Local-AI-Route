@@ -167,6 +167,15 @@ pub mod cred_mgr {
     }
 
     pub fn delete_credential(target: &str) -> Result<(), String> {
+        let _ = delete_credential_if_exists(target)?;
+        Ok(())
+    }
+
+    /// Deletes a Windows Credential Manager entry if it exists.
+    /// Returns `Ok(true)` if deleted, `Ok(false)` if not found (`ERROR_NOT_FOUND` = 1168),
+    /// or `Err(...)` for any other OS error (e.g., access denied).
+    pub fn delete_credential_if_exists(target: &str) -> Result<bool, String> {
+        const ERROR_NOT_FOUND: i32 = 1168;
         let target_wide: Vec<u16> = std::ffi::OsStr::new(target)
             .encode_wide()
             .chain(std::iter::once(0))
@@ -174,9 +183,13 @@ pub mod cred_mgr {
 
         let res = unsafe { CredDeleteW(target_wide.as_ptr(), 1, 0) };
         if res == 0 {
-            return Err(format!("CredDeleteW failed for '{}': {}", target, std::io::Error::last_os_error()));
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(ERROR_NOT_FOUND) {
+                return Ok(false);
+            }
+            return Err(format!("CredDeleteW failed for '{}': {}", target, err));
         }
-        Ok(())
+        Ok(true)
     }
 }
 

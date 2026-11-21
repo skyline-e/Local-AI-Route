@@ -139,6 +139,7 @@ pub fn run() {
             commands::refresh_quota,
             commands::prepare_new_claude_login,
             commands::prepare_new_factory_login,
+            commands::reset_app_login_state,
             commands::start_oauth_login,
             commands::poll_oauth_login,
             commands::submit_oauth_callback,

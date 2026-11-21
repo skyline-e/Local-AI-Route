@@ -948,30 +948,46 @@ pub async fn query_quota(
     })
 }
 
-pub fn prepare_new_factory_login() -> Result<String, String> {
-    let factory_dir = get_factory_dir();
+pub(crate) fn clear_live_credentials_in_dir(
+    factory_dir: &std::path::Path,
+    clear_os_keyring: bool,
+) -> Result<Vec<String>, String> {
+    let mut cleared = Vec::new();
+    let mut failures = Vec::new();
+
     if factory_dir.is_dir() {
         for fname in AUTH_FILES {
-            let p = factory_dir.join(fname);
-            if p.is_file() {
-                let _ = fs::remove_file(p);
-            }
+            super::remove_file_strict(&factory_dir.join(fname), &mut cleared, &mut failures);
         }
         for extra in &["session.json", "auth.lock", ".cache"] {
-            let p = factory_dir.join(extra);
-            if p.is_file() {
-                let _ = fs::remove_file(p);
-            }
+            super::remove_file_strict(&factory_dir.join(extra), &mut cleared, &mut failures);
         }
     }
 
     #[cfg(target_os = "windows")]
-    {
+    if clear_os_keyring {
         for target in CRED_MGR_TARGETS {
-            let _ = crate::accounts::crypto::cred_mgr::delete_credential(target);
+            match crate::accounts::crypto::cred_mgr::delete_credential_if_exists(target) {
+                Ok(true) => cleared.push(format!("Windows Credential Manager: {}", target)),
+                Ok(false) => {}
+                Err(e) => failures.push(e),
+            }
         }
     }
+    #[cfg(not(target_os = "windows"))]
+    let _ = clear_os_keyring;
 
+    super::finalize_clear_result(cleared, failures)
+}
+
+pub fn clear_live_credentials() -> Result<Vec<String>, String> {
+    let factory_dir = get_factory_dir();
+    clear_live_credentials_in_dir(&factory_dir, true)
+}
+
+pub fn prepare_new_factory_login() -> Result<String, String> {
+    let _ = clear_live_credentials()?;
+    super::clear_active_account_flags("factory");
     Ok("已重置 Factory 桌面端当前会话凭据与系统凭据，您可以重新启动 Factory 客户端登录新账号，登录完成后点击「从当前客户端导入」即可保存。".into())
 }
 

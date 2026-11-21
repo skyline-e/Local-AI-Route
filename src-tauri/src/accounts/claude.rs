@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 const API_BASE: &str = "https://api.anthropic.com";
 
-pub fn find_claude_data_dir() -> Option<PathBuf> {
+pub fn find_all_claude_data_dirs() -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
 
     #[cfg(target_os = "windows")]
@@ -59,6 +59,18 @@ pub fn find_claude_data_dir() -> Option<PathBuf> {
         }
     }
 
+    let mut unique = Vec::new();
+    for dir in candidates {
+        if dir.is_dir() && !unique.contains(&dir) {
+            unique.push(dir);
+        }
+    }
+    unique
+}
+
+pub fn find_claude_data_dir() -> Option<PathBuf> {
+    let candidates = find_all_claude_data_dirs();
+
     // Pick candidate with newest config.json
     let mut best: Option<PathBuf> = None;
     let mut newest_time = std::time::SystemTime::UNIX_EPOCH;
@@ -76,6 +88,93 @@ pub fn find_claude_data_dir() -> Option<PathBuf> {
     }
 
     best
+}
+
+fn clear_claude_dir_collect(
+    claude_dir: &Path,
+    cleared: &mut Vec<String>,
+    failures: &mut Vec<String>,
+) {
+    use std::io::Write;
+
+    let cfg_path = claude_dir.join("config.json");
+    if cfg_path.is_file() {
+        match std::fs::read_to_string(&cfg_path) {
+            Err(e) => failures.push(format!("Failed to read {}: {}", cfg_path.display(), e)),
+            Ok(raw) if !raw.trim().is_empty() => match serde_json::from_str::<Value>(&raw) {
+                Err(e) => failures.push(format!("Failed to parse {}: {}", cfg_path.display(), e)),
+                Ok(mut val) => {
+                    let mut removed_any = false;
+                    if let Some(obj) = val.as_object_mut() {
+                        for key in &["oauth:tokenCache", "oauth:tokenCacheV2", "lastKnownAccountUuid"]
+                        {
+                            if obj.remove(*key).is_some() {
+                                removed_any = true;
+                            }
+                        }
+                    }
+                    if removed_any {
+                        match serde_json::to_string_pretty(&val) {
+                            Err(e) => failures.push(e.to_string()),
+                            Ok(cleaned) => {
+                                let write_res = (|| -> Result<(), String> {
+                                    let mut temp = tempfile::Builder::new()
+                                        .prefix(".config.")
+                                        .suffix(".tmp")
+                                        .tempfile_in(claude_dir)
+                                        .map_err(|e| {
+                                            format!(
+                                                "Failed to create temp config in {}: {}",
+                                                claude_dir.display(),
+                                                e
+                                            )
+                                        })?;
+                                    temp.write_all(cleaned.as_bytes())
+                                        .map_err(|e| format!("Failed to write temp config: {}", e))?;
+                                    temp.as_file()
+                                        .sync_all()
+                                        .map_err(|e| format!("Failed to sync temp config: {}", e))?;
+                                    temp.persist(&cfg_path).map_err(|e| {
+                                        format!("Failed to replace {}: {}", cfg_path.display(), e)
+                                    })?;
+                                    Ok(())
+                                })();
+                                match write_res {
+                                    Ok(()) => cleared.push(format!("{} (auth keys)", cfg_path.display())),
+                                    Err(e) => failures.push(e),
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            Ok(_) => {}
+        }
+    }
+
+    super::remove_chromium_cookie_files_strict(claude_dir, cleared, failures);
+}
+
+#[cfg(test)]
+pub(crate) fn clear_claude_login_state_in_dir(claude_dir: &Path) -> Result<Vec<String>, String> {
+    let mut cleared = Vec::new();
+    let mut failures = Vec::new();
+    clear_claude_dir_collect(claude_dir, &mut cleared, &mut failures);
+    super::finalize_clear_result(cleared, failures)
+}
+
+pub fn clear_live_credentials() -> Result<Vec<String>, String> {
+    let dirs_list = find_all_claude_data_dirs();
+    if dirs_list.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut cleared = Vec::new();
+    let mut failures = Vec::new();
+    for dir in dirs_list {
+        clear_claude_dir_collect(&dir, &mut cleared, &mut failures);
+    }
+    super::finalize_clear_result(cleared, failures)
 }
 
 pub fn get_claude_cookie_files(claude_dir: &Path) -> Vec<PathBuf> {

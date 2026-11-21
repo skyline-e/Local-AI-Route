@@ -104,6 +104,13 @@ export interface AccountSwitchResult {
   message: string;
 }
 
+export interface ResetLoginResult {
+  success: boolean;
+  stopped_app: boolean;
+  cleared_items: string[];
+  message: string;
+}
+
 export interface OAuthStartInfo {
   session_id: string;
   provider: string;

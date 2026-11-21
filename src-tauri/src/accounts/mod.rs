@@ -3,14 +3,98 @@ pub mod chatgpt;
 pub mod claude;
 pub mod crypto;
 pub mod factory;
+pub mod gemini;
 pub mod models;
 pub mod oauth;
 pub mod storage;
 
-use crate::core::controller::{ensure_stopped_before_relaunch, launch_target};
+use crate::core::controller::{
+    ensure_stopped_before_relaunch, force_stop_target, launch_target, ProcessIdentity,
+};
 use crate::core::models::{ProxyConfig, TargetAppSpec};
-use models::{AccountProfile, AccountQuota, AccountSwitchResult};
+use models::{AccountProfile, AccountQuota, AccountSwitchResult, ResetLoginResult};
+use std::collections::HashMap;
+use std::path::Path;
 use uuid::Uuid;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResetTarget {
+    ChatGpt,
+    Claude,
+    Gemini,
+    Antigravity,
+    Factory,
+}
+
+impl ResetTarget {
+    pub fn from_app_id(app_id: &str) -> Option<Self> {
+        match app_id {
+            "chatgpt" => Some(Self::ChatGpt),
+            "claude" => Some(Self::Claude),
+            "gemini" => Some(Self::Gemini),
+            "antigravity-app" | "antigravity-ide" | "antigravity" => Some(Self::Antigravity),
+            "factory" | "factory-app" | "factory-desktop" | "droid" => Some(Self::Factory),
+            _ => None,
+        }
+    }
+}
+
+pub fn supports_reset_login(app_id: &str) -> bool {
+    ResetTarget::from_app_id(app_id).is_some()
+}
+
+pub(crate) fn remove_file_strict(
+    path: &Path,
+    cleared: &mut Vec<String>,
+    failures: &mut Vec<String>,
+) {
+    match std::fs::remove_file(path) {
+        Ok(()) => cleared.push(path.to_string_lossy().to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => failures.push(format!("{}: {}", path.display(), e)),
+    }
+}
+
+pub(crate) fn remove_dir_all_strict(
+    path: &Path,
+    cleared: &mut Vec<String>,
+    failures: &mut Vec<String>,
+) {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => cleared.push(path.to_string_lossy().to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => failures.push(format!("{}: {}", path.display(), e)),
+    }
+}
+
+pub(crate) fn remove_chromium_cookie_files_strict(
+    dir: &Path,
+    cleared: &mut Vec<String>,
+    failures: &mut Vec<String>,
+) {
+    const COOKIE_FILES: &[&str] = &["Cookies", "Cookies-journal", "Cookies-wal", "Cookies-shm"];
+    for base in [dir.join("Network"), dir.to_path_buf()] {
+        if !base.is_dir() {
+            continue;
+        }
+        for fname in COOKIE_FILES {
+            remove_file_strict(&base.join(fname), cleared, failures);
+        }
+    }
+}
+
+pub(crate) fn finalize_clear_result(
+    cleared: Vec<String>,
+    failures: Vec<String>,
+) -> Result<Vec<String>, String> {
+    if !failures.is_empty() {
+        return Err(format!(
+            "Failed to clear some login files (files may still be locked by a running process): {}",
+            failures.join("; ")
+        ));
+    }
+    Ok(cleared)
+}
 
 pub fn normalize_provider(app_id: &str) -> Option<&'static str> {
     match app_id {
@@ -764,24 +848,39 @@ pub async fn switch_account(
     })
 }
 
-pub fn delete_account(app_id: &str, account_id: &str) -> Result<(), String> {
-    let provider = normalize_provider(app_id)
-        .ok_or_else(|| format!("App '{}' is not supported", app_id))?;
-
-    let mut accounts = storage::load_accounts(provider)?;
+pub(crate) fn delete_account_in_dir(provider_dir: &Path, account_id: &str) -> Result<(), String> {
+    let mut accounts = storage::load_accounts_in_dir(provider_dir)?;
     let pos = accounts
         .iter()
         .position(|a| a.id == account_id)
         .ok_or_else(|| format!("Account '{}' not found", account_id))?;
 
-    if accounts[pos].is_active && accounts.len() > 1 {
-        return Err("无法删除当前处于激活状态的账号。请先切换至其他账号后再删除。".into());
-    }
-
+    storage::delete_account_files_in_dir(provider_dir, account_id)?;
     accounts.remove(pos);
-    storage::save_accounts(provider, &accounts)?;
-    let _ = storage::delete_account_files(provider, account_id);
+    storage::save_accounts_in_dir(provider_dir, &accounts)?;
     Ok(())
+}
+
+pub fn delete_account(app_id: &str, account_id: &str) -> Result<(), String> {
+    let provider = normalize_provider(app_id)
+        .ok_or_else(|| format!("App '{}' is not supported", app_id))?;
+    let provider_dir = storage::get_provider_accounts_dir(provider);
+    delete_account_in_dir(&provider_dir, account_id)
+}
+
+pub(crate) fn clear_active_account_flags(provider: &str) {
+    if let Ok(mut accounts) = storage::load_accounts(provider) {
+        let mut changed = false;
+        for acct in &mut accounts {
+            if acct.is_active {
+                acct.is_active = false;
+                changed = true;
+            }
+        }
+        if changed {
+            let _ = storage::save_accounts(provider, &accounts);
+        }
+    }
 }
 
 pub async fn refresh_quota(
@@ -870,30 +969,115 @@ pub async fn refresh_quota(
     Ok(quota)
 }
 
-pub fn prepare_new_claude_login() -> Result<String, String> {
-    let claude_dir = claude::find_claude_data_dir()
-        .ok_or_else(|| "Could not locate Claude data directory".to_string())?;
+pub async fn reset_app_login_state(
+    app_id: &str,
+    target_spec: Option<TargetAppSpec>,
+    pids_to_stop: Vec<u32>,
+    seed_identities: HashMap<u32, ProcessIdentity>,
+    running_sibling_name: Option<String>,
+    is_en: bool,
+) -> Result<ResetLoginResult, String> {
+    let reset_target = ResetTarget::from_app_id(app_id).ok_or_else(|| {
+        if is_en {
+            format!("Application '{}' does not support login state reset", app_id)
+        } else {
+            format!("应用 '{}' 不支持重置登录状态", app_id)
+        }
+    })?;
 
-    let cfg_path = claude_dir.join("config.json");
-    if cfg_path.is_file() {
-        let raw = std::fs::read_to_string(&cfg_path).unwrap_or_default();
-        if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&raw) {
-            if let Some(obj) = val.as_object_mut() {
-                obj.remove("oauth:tokenCache");
-                obj.remove("oauth:tokenCacheV2");
-                obj.remove("lastKnownAccountUuid");
+    if let Some(sibling_name) = running_sibling_name {
+        return Err(if is_en {
+            format!(
+                "\"{}\" is still running and shares OAuth credentials with this app. Please close \"{}\" first before resetting login state.",
+                sibling_name, sibling_name
+            )
+        } else {
+            format!(
+                "检测到「{}」仍在运行，且与当前应用共用本机 OAuth 凭据。请先关闭「{}」后再重置登录状态，以避免凭据被写回或丢失未保存内容。",
+                sibling_name, sibling_name
+            )
+        });
+    }
+
+    let had_running_processes = !pids_to_stop.is_empty() || !seed_identities.is_empty();
+    let mut stopped_app = false;
+
+    if had_running_processes {
+        let spec_clone = target_spec.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            if !pids_to_stop.is_empty() {
+                let _ = ensure_stopped_before_relaunch(&pids_to_stop, true);
             }
-            let cleaned = serde_json::to_string_pretty(&val).map_err(|e| e.to_string())?;
-            std::fs::write(&cfg_path, cleaned).map_err(|e| e.to_string())?;
-        }
+            if let Some(ref spec) = spec_clone {
+                force_stop_target(spec, &seed_identities, is_en)?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| format!("Failed to stop running application: {}", e))??;
+
+        stopped_app = true;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     }
 
-    for f in claude::get_claude_cookie_files(&claude_dir) {
-        if f.is_file() {
-            let _ = std::fs::remove_file(f);
-        }
+    let cleared_items = match reset_target {
+        ResetTarget::ChatGpt => chatgpt::clear_live_credentials()?,
+        ResetTarget::Claude => claude::clear_live_credentials()?,
+        ResetTarget::Gemini => gemini::clear_live_credentials()?,
+        ResetTarget::Antigravity => antigravity::clear_live_credentials(app_id)?,
+        ResetTarget::Factory => factory::clear_live_credentials()?,
+    };
+
+    if let Some(provider) = normalize_provider(app_id) {
+        clear_active_account_flags(provider);
     }
 
+    let app_display = target_spec
+        .as_ref()
+        .map(|spec| {
+            if is_en && !spec.name_en.is_empty() {
+                spec.name_en.clone()
+            } else {
+                spec.name.clone()
+            }
+        })
+        .unwrap_or_else(|| app_id.to_string());
+
+    let message = if is_en {
+        if normalize_provider(app_id).is_some() {
+            format!(
+                "Login state for {} has been reset. You can relaunch the app to sign in with a new account, or switch back to any saved account.",
+                app_display
+            )
+        } else {
+            format!(
+                "Login state for {} has been reset. You can relaunch the app to sign in with a new account.",
+                app_display
+            )
+        }
+    } else if normalize_provider(app_id).is_some() {
+        format!(
+            "已重置「{}」的客户端登录状态。您可以重新启动应用登录新账号，或随时切换回已保存的账号。",
+            app_display
+        )
+    } else {
+        format!(
+            "已重置「{}」的客户端登录状态。您可以重新启动应用登录新账号。",
+            app_display
+        )
+    };
+
+    Ok(ResetLoginResult {
+        success: true,
+        stopped_app,
+        cleared_items,
+        message,
+    })
+}
+
+pub fn prepare_new_claude_login() -> Result<String, String> {
+    let _ = claude::clear_live_credentials()?;
+    clear_active_account_flags("claude");
     Ok("已重置 Claude 桌面端当前会话，您可以重新启动 Claude 登录新账号，登录完成后点击「从当前客户端导入」即可保存。".into())
 }
 
@@ -911,7 +1095,202 @@ mod tests {
         assert_eq!(normalize_provider("factory-app"), Some("factory"));
         assert_eq!(normalize_provider("factory-desktop"), Some("factory"));
         assert_eq!(normalize_provider("droid"), Some("factory"));
+        assert_eq!(normalize_provider("gemini"), None);
         assert_eq!(normalize_provider("unknown_app"), None);
+    }
+
+    #[test]
+    fn test_supports_reset_login() {
+        assert_eq!(ResetTarget::from_app_id("chatgpt"), Some(ResetTarget::ChatGpt));
+        assert_eq!(ResetTarget::from_app_id("claude"), Some(ResetTarget::Claude));
+        assert_eq!(ResetTarget::from_app_id("gemini"), Some(ResetTarget::Gemini));
+        assert_eq!(ResetTarget::from_app_id("antigravity-app"), Some(ResetTarget::Antigravity));
+        assert_eq!(ResetTarget::from_app_id("antigravity-ide"), Some(ResetTarget::Antigravity));
+        assert_eq!(ResetTarget::from_app_id("factory"), Some(ResetTarget::Factory));
+        assert_eq!(ResetTarget::from_app_id("droid"), Some(ResetTarget::Factory));
+        assert_eq!(ResetTarget::from_app_id("custom-12345"), None);
+        assert!(!supports_reset_login("custom-12345"));
+        assert!(!supports_reset_login("unknown_app"));
+    }
+
+    #[test]
+    fn test_remove_chromium_cookie_files_strict() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let net = root.join("Network");
+        std::fs::create_dir_all(&net).unwrap();
+
+        std::fs::write(net.join("Cookies"), b"c1").unwrap();
+        std::fs::write(net.join("Cookies-wal"), b"c2").unwrap();
+        std::fs::write(root.join("Cookies"), b"c3").unwrap();
+        std::fs::write(root.join("Preferences"), b"{}").unwrap();
+
+        let mut cleared = Vec::new();
+        let mut failures = Vec::new();
+        remove_chromium_cookie_files_strict(root, &mut cleared, &mut failures);
+        assert!(failures.is_empty());
+        assert_eq!(cleared.len(), 3);
+        assert!(!net.join("Cookies").exists());
+        assert!(!net.join("Cookies-wal").exists());
+        assert!(!root.join("Cookies").exists());
+        assert!(root.join("Preferences").is_file());
+    }
+
+    #[test]
+    fn test_clear_claude_login_state_in_dir_preserves_other_settings() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let cfg = root.join("config.json");
+        std::fs::write(
+            &cfg,
+            r#"{
+                "theme": "dark",
+                "oauth:tokenCache": "old1",
+                "oauth:tokenCacheV2": "old2",
+                "lastKnownAccountUuid": "uuid-123"
+            }"#,
+        )
+        .unwrap();
+        let net = root.join("Network");
+        std::fs::create_dir_all(&net).unwrap();
+        std::fs::write(net.join("Cookies"), b"cookie").unwrap();
+
+        let cleared = claude::clear_claude_login_state_in_dir(root).expect("clear ok");
+        assert!(cleared.len() >= 2);
+        assert!(!net.join("Cookies").exists());
+
+        let updated: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(updated.get("theme").and_then(|v| v.as_str()), Some("dark"));
+        assert!(updated.get("oauth:tokenCache").is_none());
+        assert!(updated.get("oauth:tokenCacheV2").is_none());
+        assert!(updated.get("lastKnownAccountUuid").is_none());
+    }
+
+    #[test]
+    fn test_clear_claude_login_state_rejects_corrupt_config() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::write(root.join("config.json"), "{ invalid json").unwrap();
+        let err = claude::clear_claude_login_state_in_dir(root).unwrap_err();
+        assert!(err.contains("Failed to parse"));
+    }
+
+    #[test]
+    fn test_delete_account_in_dir_allows_active_single_and_multi() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+
+        let make_profile = |id: &str, name: &str, is_active: bool| AccountProfile {
+            id: id.into(),
+            provider: "chatgpt".into(),
+            name: name.into(),
+            email: Some(format!("{}@example.com", name)),
+            account_id: Some(id.into()),
+            plan_type: Some("Plus".into()),
+            created_at: "2026-11-21 10:00:00".into(),
+            last_used_at: None,
+            is_active,
+            quota: None,
+        };
+
+        // Setup 2 accounts: acc1 (active), acc2 (inactive)
+        storage::save_accounts_in_dir(
+            dir,
+            &[
+                make_profile("acc1", "alice", true),
+                make_profile("acc2", "bob", false),
+            ],
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("acc1")).unwrap();
+        std::fs::write(dir.join("acc1").join("auth.json"), "{}").unwrap();
+        std::fs::create_dir_all(dir.join("acc2")).unwrap();
+        std::fs::write(dir.join("acc2").join("auth.json"), "{}").unwrap();
+
+        // 1. Delete active account when multiple accounts exist
+        delete_account_in_dir(dir, "acc1").expect("deleting active account should succeed");
+        assert!(!dir.join("acc1").exists());
+        let remaining = storage::load_accounts_in_dir(dir).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, "acc2");
+        assert!(!remaining[0].is_active, "remaining account should stay inactive");
+
+        // 2. Delete the last remaining account
+        delete_account_in_dir(dir, "acc2").expect("deleting last account should succeed");
+        assert!(!dir.join("acc2").exists());
+        assert!(storage::load_accounts_in_dir(dir).unwrap().is_empty());
+
+        // 3. Deleting a non-existent account returns Err
+        assert!(delete_account_in_dir(dir, "missing").is_err());
+    }
+
+    #[test]
+    fn test_clear_chatgpt_credentials_in_paths() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let auth_path = tmp.path().join(".codex").join("auth.json");
+        std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
+        std::fs::write(&auth_path, r#"{"tokens":{}}"#).unwrap();
+
+        let profile = tmp.path().join("Codex");
+        std::fs::create_dir_all(profile.join("Network")).unwrap();
+        std::fs::create_dir_all(profile.join("Local Storage")).unwrap();
+        std::fs::write(profile.join("Network").join("Cookies"), b"c").unwrap();
+        std::fs::write(profile.join("Local Storage").join("000003.log"), b"ls").unwrap();
+        std::fs::write(profile.join("Preferences"), b"{}").unwrap();
+
+        let cleared = chatgpt::clear_live_credentials_in_paths(&auth_path, &[profile.clone()])
+            .expect("clear ok");
+        assert_eq!(cleared.len(), 3);
+        assert!(!auth_path.exists());
+        assert!(!profile.join("Network").join("Cookies").exists());
+        assert!(!profile.join("Local Storage").exists());
+        assert!(profile.join("Preferences").is_file());
+    }
+
+    #[test]
+    fn test_clear_factory_credentials_in_dir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        std::fs::write(dir.join("auth.v2.file"), b"enc").unwrap();
+        std::fs::write(dir.join("auth.v2.key"), b"key").unwrap();
+        std::fs::write(dir.join("session.json"), b"{}").unwrap();
+        std::fs::write(dir.join("settings.json"), b"{}").unwrap();
+
+        let cleared = factory::clear_live_credentials_in_dir(dir, false).expect("clear ok");
+        assert_eq!(cleared.len(), 3);
+        assert!(!dir.join("auth.v2.file").exists());
+        assert!(!dir.join("auth.v2.key").exists());
+        assert!(!dir.join("session.json").exists());
+        assert!(dir.join("settings.json").is_file());
+    }
+
+    #[test]
+    fn test_clear_antigravity_credentials_in_paths() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tok1 = tmp.path().join("antigravity-oauth-token");
+        std::fs::write(&tok1, b"tok").unwrap();
+
+        let profile = tmp.path().join("Antigravity IDE");
+        std::fs::create_dir_all(profile.join("Network")).unwrap();
+        std::fs::create_dir_all(profile.join("User").join("globalStorage")).unwrap();
+        std::fs::write(profile.join("Network").join("Cookies"), b"c").unwrap();
+        std::fs::write(
+            profile.join("User").join("globalStorage").join("state.vscdb"),
+            b"db",
+        )
+        .unwrap();
+
+        let cleared = antigravity::clear_live_credentials_in_paths(&[tok1.clone()], &[profile.clone()], false)
+            .expect("clear ok");
+        assert_eq!(cleared.len(), 2);
+        assert!(!tok1.exists());
+        assert!(!profile.join("Network").join("Cookies").exists());
+        assert!(profile
+            .join("User")
+            .join("globalStorage")
+            .join("state.vscdb")
+            .is_file());
     }
 }
 

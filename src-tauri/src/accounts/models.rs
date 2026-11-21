@@ -42,3 +42,11 @@ pub struct AccountSwitchResult {
     pub restarted_app: bool,
     pub message: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResetLoginResult {
+    pub success: bool,
+    pub stopped_app: bool,
+    pub cleared_items: Vec<String>,
+    pub message: String,
+}

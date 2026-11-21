@@ -10,6 +10,7 @@ import {
   AccountProfile,
   AccountQuota,
   AccountSwitchResult,
+  ResetLoginResult,
   OAuthStartInfo,
   OAuthPollResponse,
 } from "./types";
@@ -51,6 +52,7 @@ import {
   Key,
   PlusCircle,
   Calendar,
+  LogOut,
 } from "lucide-vue-next";
 
 const settings = ref<AppSettings>({
@@ -491,13 +493,19 @@ const accounts = ref<AccountProfile[]>([]);
 const isLoadingAccounts = ref(false);
 const isSwitchingAccount = ref(false);
 const isRefreshingQuota = ref(false);
+const isDeletingAccount = ref(false);
+const isResettingLogin = ref(false);
 
 const isSupportsAccounts = computed(() => {
   return ["chatgpt", "claude", "antigravity-app", "antigravity-ide", "factory"].includes(currentTarget.value?.id || "");
 });
 
+const isSupportsResetLogin = computed(() => {
+  return ["chatgpt", "claude", "gemini", "antigravity-app", "antigravity-ide", "factory"].includes(currentTarget.value?.id || "");
+});
+
 const activeAccount = computed(() => {
-  return accounts.value.find((a) => a.is_active) || (accounts.value.length > 0 ? accounts.value[0] : undefined);
+  return accounts.value.find((a) => a.is_active);
 });
 
 async function loadAccountsForCurrent() {
@@ -593,15 +601,98 @@ async function handleRefreshQuota(accountId?: string) {
   }
 }
 
-async function handleDeleteAccount(account: AccountProfile) {
+// Confirm Delete Account Modal
+const confirmDeleteAccountModal = ref<{
+  open: boolean;
+  appId: string;
+  account: AccountProfile | null;
+}>({
+  open: false,
+  appId: "",
+  account: null,
+});
+
+function requestDeleteAccount(account: AccountProfile) {
   const currentId = currentTarget.value?.id;
-  if (!currentId) return;
+  if (!currentId || isDeletingAccount.value) return;
+  confirmDeleteAccountModal.value = {
+    open: true,
+    appId: currentId,
+    account,
+  };
+}
+
+async function executeDeleteAccount() {
+  const { appId, account } = confirmDeleteAccountModal.value;
+  if (!appId || !account || isDeletingAccount.value || isResettingLogin.value) return;
+  isDeletingAccount.value = true;
   try {
-    await invoke("delete_account", { appId: currentId, accountId: account.id });
+    await invoke("delete_account", { appId, accountId: account.id });
+    confirmDeleteAccountModal.value = { open: false, appId: "", account: null };
     showToast(t("account_deleted"), "success");
     await loadAccountsForCurrent();
   } catch (err) {
-    showToast(`删除失败: ${err}`, "error");
+    showToast(`${t("toast_delete_account_failed")}: ${err}`, "error");
+  } finally {
+    isDeletingAccount.value = false;
+  }
+}
+
+// Confirm Reset App Login State Modal
+const confirmResetLoginModal = ref<{
+  open: boolean;
+  target: TargetAppSpec | null;
+}>({
+  open: false,
+  target: null,
+});
+
+const confirmResetLoginIsRunning = computed(() => {
+  const id = confirmResetLoginModal.value.target?.id;
+  if (!id) return false;
+  const status = appStatuses.value[id]?.status;
+  return Boolean(status && status !== "stopped");
+});
+
+const confirmResetSiblingTarget = computed<TargetAppSpec | null>(() => {
+  const id = confirmResetLoginModal.value.target?.id;
+  const siblingId =
+    id === "antigravity-app"
+      ? "antigravity-ide"
+      : id === "antigravity-ide"
+      ? "antigravity-app"
+      : null;
+  if (!siblingId) return null;
+  const status = appStatuses.value[siblingId]?.status;
+  if (!status || status === "stopped") return null;
+  return allTargets.value.find((item) => item.id === siblingId) || null;
+});
+
+function requestResetLogin(target: TargetAppSpec) {
+  if (isResettingLogin.value) return;
+  confirmResetLoginModal.value = {
+    open: true,
+    target,
+  };
+}
+
+async function executeResetLogin() {
+  const target = confirmResetLoginModal.value.target;
+  if (!target || isResettingLogin.value || confirmResetSiblingTarget.value) return;
+  isResettingLogin.value = true;
+  try {
+    const res = await invoke<ResetLoginResult>("reset_app_login_state", { appId: target.id });
+    confirmResetLoginModal.value = { open: false, target: null };
+    showToast(res.message, "success", 5000);
+    if (isSupportsAccounts.value) {
+      await loadAccountsForCurrent();
+    }
+    await refreshStatuses();
+  } catch (err) {
+    showToast(`${t("toast_reset_login_failed")}: ${err}`, "error", 5000);
+    await refreshStatuses();
+  } finally {
+    isResettingLogin.value = false;
   }
 }
 
@@ -812,24 +903,6 @@ async function handleAddAccountSubmit() {
   }
 }
 
-async function handlePrepareClaudeLogin() {
-  try {
-    const msg = await invoke<string>("prepare_new_claude_login");
-    showToast(msg, "info", 5000);
-  } catch (err) {
-    showToast(`重置会话失败: ${err}`, "error");
-  }
-}
-
-async function handlePrepareFactoryLogin() {
-  try {
-    const msg = await invoke<string>("prepare_new_factory_login");
-    showToast(msg, "info", 5000);
-  } catch (err) {
-    showToast(`重置会话失败: ${err}`, "error");
-  }
-}
-
 function formatCountdown(sec?: number): string {
   if (sec === undefined || sec === null || sec <= 0) return "--";
   const days = Math.floor(sec / 86400);
@@ -904,7 +977,7 @@ onUnmounted(() => {
         <div>
           <h1 class="text-base font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
             {{ t("app_title") }}
-            <span class="text-[10px] px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300 font-mono">v0.2.12</span>
+            <span class="text-[10px] px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300 font-mono">v0.2.13</span>
           </h1>
           <p class="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">{{ t("app_subtitle") }}</p>
         </div>
@@ -1405,7 +1478,7 @@ onUnmounted(() => {
                 <!-- Refresh Quota -->
                 <button
                   @click="handleRefreshQuota()"
-                  :disabled="isRefreshingQuota || accounts.length === 0"
+                  :disabled="isRefreshingQuota || isResettingLogin || accounts.length === 0"
                   class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1 transition shadow-xs disabled:opacity-50 disabled:cursor-not-allowed"
                   :title="t('btn_refresh_quota')"
                 >
@@ -1416,7 +1489,7 @@ onUnmounted(() => {
                 <!-- Import Active Account -->
                 <button
                   @click="handleImportCurrentAccount()"
-                  :disabled="isLoadingAccounts"
+                  :disabled="isLoadingAccounts || isResettingLogin"
                   class="px-2.5 py-1 text-xs font-semibold rounded-lg bg-sky-600 hover:bg-sky-700 text-white flex items-center gap-1 transition shadow-xs disabled:opacity-50"
                   :title="t('btn_import_active_account')"
                 >
@@ -1428,7 +1501,8 @@ onUnmounted(() => {
                 <!-- OAuth Browser Login -->
                 <button
                   @click="openAddAccountModal('oauth', true)"
-                  class="px-2.5 py-1 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white flex items-center gap-1 transition shadow-xs"
+                  :disabled="isResettingLogin"
+                  class="px-2.5 py-1 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white flex items-center gap-1 transition shadow-xs disabled:opacity-50 disabled:cursor-not-allowed"
                   :title="t('btn_oauth_login')"
                 >
                   <Globe class="w-3.5 h-3.5" />
@@ -1438,32 +1512,24 @@ onUnmounted(() => {
                 <!-- Add Account (Manual / OAuth Modal) -->
                 <button
                   @click="openAddAccountModal('manual', false)"
-                  class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1 transition shadow-xs"
+                  :disabled="isResettingLogin"
+                  class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center gap-1 transition shadow-xs disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <PlusCircle class="w-3.5 h-3.5 text-indigo-500" />
                   <span>{{ t("btn_add_account") }}</span>
                 </button>
 
-                <!-- Reset Claude Session (Claude only) -->
+                <!-- Reset App Login State (All supported apps) -->
                 <button
-                  v-if="currentTarget.id === 'claude'"
-                  @click="handlePrepareClaudeLogin()"
-                  class="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-amber-300 dark:border-amber-800/60 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/60 flex items-center gap-1 transition"
-                  :title="t('claude_reset_session_tip')"
+                  v-if="isSupportsResetLogin"
+                  @click="requestResetLogin(currentTarget)"
+                  :disabled="isResettingLogin"
+                  class="px-2.5 py-1 text-xs font-medium rounded-lg border border-amber-300 dark:border-amber-800/60 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/60 flex items-center gap-1 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                  :title="t('btn_reset_login_tip')"
                 >
-                  <Key class="w-3 h-3 text-amber-500" />
-                  <span>{{ t("claude_reset_session_btn") }}</span>
-                </button>
-
-                <!-- Reset Factory Session (Factory only) -->
-                <button
-                  v-if="currentTarget.id === 'factory'"
-                  @click="handlePrepareFactoryLogin()"
-                  class="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-indigo-300 dark:border-indigo-800/60 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 flex items-center gap-1 transition cursor-pointer"
-                  :title="t('factory_reset_session_tip')"
-                >
-                  <Key class="w-3 h-3 text-indigo-500" />
-                  <span>{{ t("factory_reset_session_btn") }}</span>
+                  <RotateCw v-if="isResettingLogin" class="w-3.5 h-3.5 animate-spin text-amber-500" />
+                  <LogOut v-else class="w-3.5 h-3.5 text-amber-500" />
+                  <span>{{ t("btn_reset_login") }}</span>
                 </button>
               </div>
             </div>
@@ -1601,7 +1667,7 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <!-- Empty State if no active account -->
+            <!-- Empty State if no saved accounts -->
             <div
               v-else-if="accounts.length === 0"
               class="py-6 px-4 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 text-center space-y-2 bg-white/60 dark:bg-slate-800/40"
@@ -1626,6 +1692,15 @@ onUnmounted(() => {
                   {{ t("btn_oauth_login") }}
                 </button>
               </div>
+            </div>
+
+            <!-- Hint when saved accounts exist, but none is currently active -->
+            <div
+              v-else
+              class="px-3.5 py-2.5 rounded-lg border border-amber-200/80 dark:border-amber-800/50 bg-amber-50/50 dark:bg-amber-950/20 text-xs text-amber-700 dark:text-amber-300 flex items-center gap-2"
+            >
+              <Info class="w-4 h-4 shrink-0 text-amber-500" />
+              <span class="leading-relaxed">{{ t("no_active_account_tip") }}</span>
             </div>
 
             <!-- Saved Accounts List Section -->
@@ -1680,7 +1755,7 @@ onUnmounted(() => {
                     <button
                       v-if="!acct.is_active"
                       @click="requestSwitchAccount(acct)"
-                      :disabled="isSwitchingAccount"
+                      :disabled="isSwitchingAccount || isResettingLogin"
                       class="px-3 py-1 text-xs font-semibold rounded-lg bg-sky-600 hover:bg-sky-700 text-white flex items-center gap-1 shadow-xs transition disabled:opacity-50"
                     >
                       <ArrowRightLeft class="w-3 h-3" />
@@ -1689,17 +1764,17 @@ onUnmounted(() => {
 
                     <button
                       @click="handleRefreshQuota(acct.id)"
-                      :disabled="isRefreshingQuota"
-                      class="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition"
+                      :disabled="isRefreshingQuota || isResettingLogin"
+                      class="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition disabled:opacity-50"
                       :title="t('btn_refresh_quota')"
                     >
                       <RefreshCw class="w-3.5 h-3.5" />
                     </button>
 
                     <button
-                      v-if="!acct.is_active"
-                      @click="handleDeleteAccount(acct)"
-                      class="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
+                      @click="requestDeleteAccount(acct)"
+                      :disabled="isDeletingAccount || isResettingLogin"
+                      class="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition disabled:opacity-50"
                       :title="t('btn_delete')"
                     >
                       <Trash2 class="w-3.5 h-3.5" />
@@ -1707,6 +1782,37 @@ onUnmounted(() => {
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+
+          <!-- Card: 应用登录状态 (For apps without multi-account list, e.g. Gemini Desktop) -->
+          <div
+            v-else-if="isSupportsResetLogin"
+            class="p-4 rounded-xl border border-amber-200/80 dark:border-amber-900/50 bg-amber-50/30 dark:bg-amber-950/15 space-y-2"
+          >
+            <div class="flex items-center justify-between flex-wrap gap-2">
+              <div class="flex items-center gap-2.5">
+                <div class="w-7 h-7 rounded-lg bg-amber-500/10 dark:bg-amber-400/10 flex items-center justify-center text-amber-600 dark:text-amber-400">
+                  <LogOut class="w-4 h-4" />
+                </div>
+                <div>
+                  <span class="text-xs font-bold text-slate-800 dark:text-slate-200 block">{{ t("section_login_state") }}</span>
+                  <p class="text-[11px] text-slate-500 dark:text-slate-400 leading-snug mt-0.5">
+                    {{ t("gemini_reset_login_desc") }}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                @click="requestResetLogin(currentTarget)"
+                :disabled="isResettingLogin"
+                class="px-3 py-1.5 text-xs font-medium rounded-lg border border-amber-300 dark:border-amber-800/60 bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/60 flex items-center gap-1.5 transition shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+                :title="t('btn_reset_login_tip')"
+              >
+                <RotateCw v-if="isResettingLogin" class="w-3.5 h-3.5 animate-spin text-amber-500" />
+                <LogOut v-else class="w-3.5 h-3.5 text-amber-500" />
+                <span>{{ t("btn_reset_login") }}</span>
+              </button>
             </div>
           </div>
 
@@ -1999,6 +2105,146 @@ onUnmounted(() => {
           >
             <RotateCw v-if="isSwitchingAccount" class="w-3.5 h-3.5 animate-spin" />
             <span>{{ t("btn_confirm") }}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirm Delete Account Modal -->
+    <div
+      v-if="confirmDeleteAccountModal.open && confirmDeleteAccountModal.account"
+      class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in"
+    >
+      <div class="bg-white dark:bg-slate-800 rounded-xl max-w-md w-full p-5 space-y-4 shadow-xl border border-rose-500/30">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-full bg-rose-100 dark:bg-rose-950/60 flex items-center justify-center text-rose-600 dark:text-rose-400 shrink-0">
+            <Trash2 class="w-5 h-5" />
+          </div>
+          <div class="min-w-0">
+            <h3 class="text-sm font-bold text-slate-900 dark:text-white">{{ t("confirm_delete_account_title") }}</h3>
+            <div class="flex items-center gap-1.5 mt-0.5 flex-wrap">
+              <span class="text-xs text-rose-600 dark:text-rose-400 font-semibold truncate">
+                {{ confirmDeleteAccountModal.account.name }}
+              </span>
+              <span
+                v-if="confirmDeleteAccountModal.account.is_active"
+                class="text-[9px] font-medium px-1.5 py-0.2 rounded bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800"
+              >
+                {{ t("active_account_badge") }}
+              </span>
+            </div>
+            <p
+              v-if="confirmDeleteAccountModal.account.email || confirmDeleteAccountModal.account.account_id"
+              class="text-[11px] text-slate-400 font-mono truncate"
+            >
+              {{ confirmDeleteAccountModal.account.email || confirmDeleteAccountModal.account.account_id }}
+            </p>
+          </div>
+        </div>
+
+        <p class="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+          {{ t("confirm_delete_account_desc") }}
+        </p>
+
+        <div
+          v-if="confirmDeleteAccountModal.account.is_active"
+          class="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-xs flex items-start gap-2"
+        >
+          <Info class="w-4 h-4 shrink-0 mt-0.5" />
+          <span class="leading-relaxed">{{ t("confirm_delete_active_account_note") }}</span>
+        </div>
+
+        <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-700/60">
+          <button
+            @click="confirmDeleteAccountModal.open = false"
+            :disabled="isDeletingAccount"
+            class="px-3.5 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition disabled:opacity-50"
+          >
+            {{ t("btn_cancel") }}
+          </button>
+          <button
+            @click="executeDeleteAccount"
+            :disabled="isDeletingAccount"
+            class="px-4 py-1.5 text-xs font-semibold rounded-lg bg-rose-600 hover:bg-rose-700 text-white flex items-center gap-1.5 shadow-sm transition disabled:opacity-50"
+          >
+            <RotateCw v-if="isDeletingAccount" class="w-3.5 h-3.5 animate-spin" />
+            <Trash2 v-else class="w-3.5 h-3.5" />
+            <span>{{ t("btn_confirm_delete") }}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirm Reset App Login State Modal -->
+    <div
+      v-if="confirmResetLoginModal.open && confirmResetLoginModal.target"
+      class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in"
+    >
+      <div class="bg-white dark:bg-slate-800 rounded-xl max-w-md w-full p-5 space-y-4 shadow-xl border border-amber-500/30">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-950/60 flex items-center justify-center text-amber-600 dark:text-amber-400 shrink-0">
+            <LogOut class="w-5 h-5" />
+          </div>
+          <div>
+            <h3 class="text-sm font-bold text-slate-900 dark:text-white">{{ t("confirm_reset_login_title") }}</h3>
+            <p class="text-xs text-amber-600 dark:text-amber-400 font-semibold mt-0.5">
+              {{ currentLang === 'en-US' && confirmResetLoginModal.target.name_en ? confirmResetLoginModal.target.name_en : confirmResetLoginModal.target.name }}
+            </p>
+          </div>
+        </div>
+
+        <p class="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+          {{ confirmResetLoginModal.target.id === 'gemini' ? t("confirm_reset_login_desc_gemini") : t("confirm_reset_login_desc_accounts") }}
+        </p>
+
+        <div
+          v-if="confirmResetLoginModal.target.id === 'antigravity-app' || confirmResetLoginModal.target.id === 'antigravity-ide'"
+          class="p-2.5 rounded-lg bg-sky-500/10 border border-sky-500/30 text-sky-700 dark:text-sky-300 text-xs flex items-start gap-2"
+        >
+          <Info class="w-4 h-4 shrink-0 mt-0.5" />
+          <span class="leading-relaxed">{{ t("confirm_reset_login_antigravity_note") }}</span>
+        </div>
+
+        <div
+          v-if="confirmResetSiblingTarget"
+          class="p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-700 dark:text-rose-300 text-xs flex items-start gap-2"
+        >
+          <AlertCircle class="w-4 h-4 shrink-0 mt-0.5" />
+          <span class="leading-relaxed">
+            {{ currentLang === 'en-US' && confirmResetSiblingTarget.name_en ? confirmResetSiblingTarget.name_en : confirmResetSiblingTarget.name }}
+            {{ t("confirm_reset_login_sibling_running_note") }}
+          </span>
+        </div>
+
+        <div
+          v-if="confirmResetLoginIsRunning"
+          class="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-xs flex items-start gap-2"
+        >
+          <AlertTriangle class="w-4 h-4 shrink-0 mt-0.5" />
+          <div class="space-y-1 leading-relaxed">
+            <p>{{ t("confirm_reset_login_running_note") }}</p>
+            <p v-if="confirmResetLoginModal.target.warn_unsaved_on_kill" class="font-semibold text-rose-600 dark:text-rose-400">
+              {{ t("confirm_reset_login_unsaved_note") }}
+            </p>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-700/60">
+          <button
+            @click="confirmResetLoginModal.open = false"
+            :disabled="isResettingLogin"
+            class="px-3.5 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition disabled:opacity-50"
+          >
+            {{ t("btn_cancel") }}
+          </button>
+          <button
+            @click="executeResetLogin"
+            :disabled="isResettingLogin || Boolean(confirmResetSiblingTarget)"
+            class="px-4 py-1.5 text-xs font-semibold rounded-lg bg-amber-600 hover:bg-amber-700 text-white flex items-center gap-1.5 shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <RotateCw v-if="isResettingLogin" class="w-3.5 h-3.5 animate-spin" />
+            <LogOut v-else class="w-3.5 h-3.5" />
+            <span>{{ t("btn_confirm_reset_login") }}</span>
           </button>
         </div>
       </div>

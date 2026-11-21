@@ -111,6 +111,67 @@ pub fn write_credential_payload(payload_json: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn candidate_antigravity_profile_dirs(app_id: &str) -> Vec<PathBuf> {
+    let mut dirs_list = Vec::new();
+    let Some(config_dir) = dirs::config_dir() else {
+        return dirs_list;
+    };
+
+    let subdirs: &[&str] = match app_id {
+        "antigravity-app" => &["Antigravity"],
+        "antigravity-ide" => &["Antigravity IDE", "AntigravityIDE"],
+        _ => &["Antigravity", "Antigravity IDE", "AntigravityIDE"],
+    };
+
+    for sub in subdirs {
+        let p = config_dir.join(sub);
+        if p.is_dir() && !dirs_list.contains(&p) {
+            dirs_list.push(p);
+        }
+    }
+
+    dirs_list
+}
+
+pub(crate) fn clear_live_credentials_in_paths(
+    token_paths: &[PathBuf],
+    profile_dirs: &[PathBuf],
+    clear_os_keyring: bool,
+) -> Result<Vec<String>, String> {
+    let mut cleared = Vec::new();
+    let mut failures = Vec::new();
+
+    // 1. Delete Windows Credential Manager entry
+    #[cfg(target_os = "windows")]
+    if clear_os_keyring {
+        match super::crypto::cred_mgr::delete_credential_if_exists("gemini:antigravity") {
+            Ok(true) => cleared.push("Windows Credential Manager: gemini:antigravity".to_string()),
+            Ok(false) => {}
+            Err(e) => failures.push(e),
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = clear_os_keyring;
+
+    // 2. Delete CLI / standalone OAuth token files
+    for path in token_paths {
+        super::remove_file_strict(path, &mut cleared, &mut failures);
+    }
+
+    // 3. Clear Electron webview cookie files without touching User settings / workspaces / state.vscdb
+    for profile_dir in profile_dirs {
+        super::remove_chromium_cookie_files_strict(profile_dir, &mut cleared, &mut failures);
+    }
+
+    super::finalize_clear_result(cleared, failures)
+}
+
+pub fn clear_live_credentials(app_id: &str) -> Result<Vec<String>, String> {
+    let token_paths = get_cli_token_paths();
+    let profile_dirs = candidate_antigravity_profile_dirs(app_id);
+    clear_live_credentials_in_paths(&token_paths, &profile_dirs, true)
+}
+
 pub fn parse_email_from_payload(payload_json: &str) -> Option<String> {
     let val: serde_json::Value = serde_json::from_str(payload_json).ok()?;
     
