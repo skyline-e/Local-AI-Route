@@ -16,6 +16,13 @@ import {
 } from "./types";
 import { t, currentLang, detectSystemLanguage } from "./i18n";
 import {
+  getAntigravityQuotaView,
+  getAntigravityMiniPills,
+  isAntigravityAccountNeedsReauth,
+  type AntigravityMiniPill,
+} from "./antigravityQuota";
+import AntigravityQuotaPanel from "./components/AntigravityQuotaPanel.vue";
+import {
   ShieldCheck,
   Zap,
   Globe,
@@ -508,6 +515,35 @@ const activeAccount = computed(() => {
   return accounts.value.find((a) => a.is_active);
 });
 
+const activeAntigravityQuotaView = computed(() => {
+  const acct = activeAccount.value;
+  if (!acct || acct.quota?.provider !== "antigravity") return null;
+  return getAntigravityQuotaView(acct, currentLang.value);
+});
+
+const antigravityMiniPillsByAccountId = computed<Record<string, AntigravityMiniPill[]>>(() => {
+  const map: Record<string, AntigravityMiniPill[]> = {};
+  for (const acct of accounts.value) {
+    if (acct.quota?.provider === "antigravity") {
+      map[acct.id] = getAntigravityMiniPills(acct, currentLang.value);
+    }
+  }
+  return map;
+});
+
+async function openValidationUrl(url: string) {
+  try {
+    await invoke("open_external_url", { url });
+  } catch (err) {
+    showToast(`${err}`, "error");
+  }
+}
+
+function copyValidationUrl(url: string) {
+  navigator.clipboard.writeText(url);
+  showToast(t("quota_validation_url_copied"), "success");
+}
+
 async function loadAccountsForCurrent() {
   const currentId = currentTarget.value?.id;
   if (!currentId || !isSupportsAccounts.value) {
@@ -977,7 +1013,7 @@ onUnmounted(() => {
         <div>
           <h1 class="text-base font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
             {{ t("app_title") }}
-            <span class="text-[10px] px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300 font-mono">v0.2.13</span>
+            <span class="text-[10px] px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300 font-mono">v0.2.14</span>
           </h1>
           <p class="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">{{ t("app_subtitle") }}</p>
         </div>
@@ -1551,6 +1587,18 @@ onUnmounted(() => {
                       <span v-if="activeAccount.plan_type" class="text-[10px] font-semibold px-2 py-0.5 rounded bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
                         {{ activeAccount.plan_type }}
                       </span>
+                      <span
+                        v-if="activeAntigravityQuotaView?.aiCredits"
+                        class="text-[10px] font-semibold px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800"
+                      >
+                        {{ t("quota_ai_credits") }}: {{ activeAntigravityQuotaView.aiCredits }}
+                      </span>
+                      <span
+                        v-if="activeAntigravityQuotaView && (activeAntigravityQuotaView.isForbidden || activeAntigravityQuotaView.isNeedsReauth)"
+                        class="text-[10px] font-semibold px-2 py-0.5 rounded bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800"
+                      >
+                        {{ t("quota_forbidden_badge") }}
+                      </span>
 
                       <!-- Factory Session Token Expiry Badge -->
                       <template v-if="activeAccount.quota?.extra_info?.['token_expires_at']">
@@ -1605,8 +1653,17 @@ onUnmounted(() => {
                 </div>
               </div>
 
-              <!-- Quota Windows Grid -->
-              <div v-if="activeAccount.quota?.windows?.length" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              <!-- Antigravity Quota View (Buckets + Stale/Reauth Warning + Model Details) -->
+              <AntigravityQuotaPanel
+                v-if="activeAntigravityQuotaView"
+                :view="activeAntigravityQuotaView"
+                :format-countdown="formatCountdown"
+                @open-validation-url="openValidationUrl"
+                @copy-validation-url="copyValidationUrl"
+              />
+
+              <!-- Quota Windows Grid (Other Providers) -->
+              <div v-else-if="activeAccount.quota?.windows?.length" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                 <div
                   v-for="(w, idx) in activeAccount.quota.windows"
                   :key="idx"
@@ -1743,10 +1800,35 @@ onUnmounted(() => {
                         <span v-if="acct.quota?.extra_info?.['token_is_expired'] === 'true' || acct.quota?.extra_info?.['subscription_is_expired'] === 'true'" class="text-[9px] font-medium px-1.5 py-0.2 rounded bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-800">
                           {{ t("badge_expired") }}
                         </span>
+                        <span v-if="acct.quota?.provider === 'antigravity' && (acct.quota?.extra_info?.['is_forbidden'] === 'true' || isAntigravityAccountNeedsReauth(acct))" class="text-[9px] font-medium px-1.5 py-0.2 rounded bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-800">
+                          {{ t("quota_forbidden_badge") }}
+                        </span>
                       </div>
                       <p class="text-[11px] text-slate-400 font-mono truncate">
                         {{ acct.email || acct.account_id || t("unbound_email") }}
                       </p>
+                      <div
+                        v-if="antigravityMiniPillsByAccountId[acct.id]?.length"
+                        class="flex items-center gap-1 flex-wrap mt-1"
+                      >
+                        <span
+                          v-for="pill in antigravityMiniPillsByAccountId[acct.id]"
+                          :key="pill.key"
+                          :class="[
+                            'text-[10px] font-mono px-1.5 py-0.5 rounded border',
+                            pill.blockedByWeekly || pill.quotaClass === 'low'
+                              ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800/70'
+                              : pill.quotaClass === 'medium'
+                              ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800/70'
+                              : pill.quotaClass === 'high'
+                              ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/70'
+                              : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700'
+                          ]"
+                          :title="pill.blockedByWeekly ? t('quota_weekly_limit_reached') : undefined"
+                        >
+                          {{ pill.shortLabel }} {{ pill.percentageText }}
+                        </span>
+                      </div>
                     </div>
                   </div>
 

@@ -530,6 +530,7 @@ pub async fn query_quota(
                         resets_at: formatted,
                         reset_in_seconds: sec,
                         detail: Some("滚动5小时会话限制 (Rolling 5h window)".into()),
+                        ..Default::default()
                     });
                 }
 
@@ -545,6 +546,7 @@ pub async fn query_quota(
                         resets_at: formatted,
                         reset_in_seconds: sec,
                         detail: Some("7天套餐额度限制 (7-day plan limit)".into()),
+                        ..Default::default()
                     });
                 }
             }

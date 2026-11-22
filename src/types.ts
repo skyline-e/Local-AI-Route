@@ -68,11 +68,17 @@ export interface AppSettings {
 
 export interface QuotaWindow {
   name: string;
-  used_percent?: number;
-  remaining_percent?: number;
+  used_percent?: number | null;
+  remaining_percent?: number | null;
   resets_at?: string;
   reset_in_seconds?: number;
   detail?: string;
+  window_key?: string;
+  window_kind?: "bucket" | "model" | string;
+  stale?: boolean;
+  blocked_by_weekly?: boolean;
+  summary_exhausted?: boolean;
+  reset_time_iso?: string;
 }
 
 export interface AccountQuota {

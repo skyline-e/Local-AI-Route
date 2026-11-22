@@ -261,6 +261,7 @@ pub async fn query_quota(
                                 resets_at: formatted,
                                 reset_in_seconds: sec,
                                 detail: Some(format!("ChatGPT {} · {}小时滚动速率用量限制", identity.plan_type.as_deref().unwrap_or("Plus"), hours)),
+                                ..Default::default()
                             });
                         }
 
@@ -292,6 +293,7 @@ pub async fn query_quota(
                                 resets_at: formatted,
                                 reset_in_seconds: sec,
                                 detail: Some(format!("ChatGPT 每周总用量限制 ({}天滚动重置)", days)),
+                                ..Default::default()
                             });
                         }
                     }
@@ -326,6 +328,7 @@ pub async fn query_quota(
                 resets_at: Some(formatted_until),
                 reset_in_seconds: sec_remaining,
                 detail: Some(format!("套餐: {}", identity.plan_type.as_deref().unwrap_or("ChatGPT Plus"))),
+                ..Default::default()
             });
         }
     } else if windows.is_empty() {
@@ -336,6 +339,7 @@ pub async fn query_quota(
             resets_at: None,
             reset_in_seconds: None,
             detail: Some(format!("套餐: {}", identity.plan_type.as_deref().unwrap_or("Standard"))),
+            ..Default::default()
         });
     }
 

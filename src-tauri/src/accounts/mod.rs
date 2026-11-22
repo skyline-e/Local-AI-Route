@@ -190,7 +190,7 @@ pub async fn import_current_account(
                     }
                 }
                 let mut quota = None;
-                if let Ok(q) = antigravity::query_quota(&mut payload, &existing_id, proxy).await {
+                if let Ok(q) = antigravity::query_quota_with_previous(&mut payload, &existing_id, proxy, existing[pos].quota.as_ref()).await {
                     let _ = storage::save_account_data(provider, &existing_id, "credential.json", payload.as_bytes());
                     if existing[pos].email.is_none() && q.email.is_some() {
                         existing[pos].email = q.email.clone();
@@ -905,7 +905,13 @@ pub async fn refresh_quota(
         "antigravity" => {
             let data = storage::read_account_data(provider, &target_id, "credential.json")?;
             let mut payload = String::from_utf8(data).map_err(|e| e.to_string())?;
-            let q = antigravity::query_quota(&mut payload, &target_id, proxy).await?;
+            let q = antigravity::query_quota_with_previous(
+                &mut payload,
+                &target_id,
+                proxy,
+                accounts[idx].quota.as_ref(),
+            )
+            .await?;
             let _ = storage::save_account_data(provider, &target_id, "credential.json", payload.as_bytes());
             q
         }

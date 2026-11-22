@@ -15,7 +15,7 @@ pub struct AccountProfile {
     pub quota: Option<AccountQuota>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct QuotaWindow {
     pub name: String,
     pub used_percent: Option<f64>,
@@ -23,6 +23,18 @@ pub struct QuotaWindow {
     pub resets_at: Option<String>,
     pub reset_in_seconds: Option<i64>,
     pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_by_weekly: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_exhausted: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_time_iso: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

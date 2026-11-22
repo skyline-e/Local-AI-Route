@@ -881,6 +881,7 @@ pub async fn query_quota(
             resets_at: fh_resets_at,
             reset_in_seconds: fh_reset_sec,
             detail: Some(format!("{} · Standard 5小时滚动用量窗口", plan)),
+            ..Default::default()
         });
 
         windows.push(QuotaWindow {
@@ -893,6 +894,7 @@ pub async fn query_quota(
                 "{} · Standard 7天滚动用量窗口 (超额策略: {})",
                 plan, overage_pref
             )),
+            ..Default::default()
         });
 
         windows.push(QuotaWindow {
@@ -902,6 +904,7 @@ pub async fn query_quota(
             resets_at: mo_resets_at,
             reset_in_seconds: mo_reset_sec,
             detail: Some(format!("{} · Standard 月度计费用量窗口", plan)),
+            ..Default::default()
         });
 
         // Also surface Droid Core rate limits if any Droid Core bucket is actively used
@@ -921,6 +924,7 @@ pub async fn query_quota(
                         resets_at: c_resets_at,
                         reset_in_seconds: c_reset_sec,
                         detail: Some("Droid Core 免费开源模型池速率窗口".into()),
+                        ..Default::default()
                     });
                 }
             }
@@ -934,6 +938,7 @@ pub async fn query_quota(
             resets_at: None,
             reset_in_seconds: None,
             detail: Some("暂无法连接 Factory Billing API，请检查网络或代理设置后点击刷新配额".into()),
+            ..Default::default()
         });
     }
 

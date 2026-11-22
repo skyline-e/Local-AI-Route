@@ -1,12 +1,13 @@
 {
   "name": "local-ai-route",
   "private": true,
-  "version": "0.2.13",
+  "version": "0.2.14",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
+    "test": "node --experimental-strip-types --test tests/antigravityQuota.test.ts",
     "tauri": "tauri"
   },
   "dependencies": {
