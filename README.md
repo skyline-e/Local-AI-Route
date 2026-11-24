@@ -20,8 +20,8 @@
 - 🤖 **ChatGPT**（兼容 Windows 商店/独立安装包、macOS App Bundle、Linux 桌面客户端）
 - 🧠 **Claude**（兼容 Windows MSIX/Squirrel、macOS App Bundle、Linux 桌面端）
 - ✨ **Gemini 桌面版**（兼容 Windows Squirrel、macOS App Bundle、Linux 桌面端）
-- 🌌 **Antigravity 桌面版**
-- ⚡ **Antigravity IDE**（精确区分注册表与应用标识，专项保障 LSP 子进程代理继承）
+- 🌌 **Antigravity 桌面版**（支持本机兼容性调整，原文件自动备份，可随时还原）
+- ⚡ **Antigravity IDE**（精确区分注册表与应用标识，专项保障 LSP 子进程代理继承，并支持同样的本机兼容性调整）
 - 🏭 **Factory 桌面版**（兼容 Windows 安装包/Squirrel/CLI `droid`、macOS App Bundle、Linux 桌面端与二进制）
 - 🧩 **自定义扩展**：一键添加任意 Chromium / Electron 类桌面 AI 应用（如 Cursor、Windsurf 等）
 
@@ -42,6 +42,7 @@
 - 🔄 **智能状态感知与安全重启**：实时感知运行状态、直连冲突与代理端口变更；优先发送窗口平滑退出信号，保障工作区内容安全。
 - 🩺 **四维立体连接诊断**：包含代理隧道可达性、命令行启动参数、LSP 子进程环境继承及内核级 TCP 连接快照，支持一键隐私脱敏导出。
 - 👥 **多账号管理与实时配额监控**：原生适配 Antigravity、ChatGPT、Claude Desktop 以及 Factory 桌面版，支持一键免冲突账号切换、进程安全重启、AES-256-GCM / DPAPI 凭据安全解密以及会话令牌有效期与 5 小时/7 天/30 天配额与重置倒计时精准监控。
+- 🔓 **Antigravity 本机兼容性调整**：桌面版与 IDE 可处理部分安装环境带来的本地可用性提示。调整前自动保留原文件，可一键还原；应用更新后如提示重现，再执行一次即可。此功能不改变服务端授权，也不影响账号权益。
 - 🚀 **极轻驻留与桌面快捷启动**：支持生成带原应用图标的桌面快捷方式，支持关闭至托盘与开机静默驻留，日常内存占用仅约 20MB。
 - 📦 **绿色便携与现代双语交互**：自动识别 `data/` 目录便携模式，支持中英双语即时切换与浅色/深色主题。
 

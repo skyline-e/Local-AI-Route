@@ -117,6 +117,14 @@ export interface ResetLoginResult {
   message: string;
 }
 
+export interface EligibilityStatus {
+  app_id: string;
+  status: "unpatched" | "patched" | "unknown" | "missing" | "locked";
+  target_path: string;
+  backup_path: string;
+  message: string;
+}
+
 export interface OAuthStartInfo {
   session_id: string;
   provider: string;

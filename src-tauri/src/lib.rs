@@ -144,7 +144,10 @@ pub fn run() {
             commands::poll_oauth_login,
             commands::submit_oauth_callback,
             commands::cancel_oauth_login,
-            commands::open_external_url
+            commands::open_external_url,
+            commands::get_eligibility_status,
+            commands::apply_eligibility_patch,
+            commands::restore_eligibility_patch
         ])
         .setup(move |app| {
             // Build Tray Menu

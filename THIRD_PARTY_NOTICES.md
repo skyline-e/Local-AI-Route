@@ -30,7 +30,13 @@
    - License: MIT License
    - Referenced concepts: ChatGPT / Codex multi-account configuration structure (`~/.codex/auth.json`), JWT identity and subscription claim decoding (`chatgpt_plan_type`, expiration), and 5-hour rate limit and weekly usage window normalization.
 
-6. **claude-account-switcher (`SnlperStripes/claude-account-switcher`)**
+6. **eligibility-antigravity-patcher (`QNIX-Dev/eligibility-antigravity-patcher`)**
+   - Repository: https://github.com/QNIX-Dev/eligibility-antigravity-patcher
+   - Copyright (c) QNIX-Dev
+   - License: MIT License
+   - Referenced concepts: Reversible local compatibility handling for Antigravity Desktop and IDE, including original-file backup and verification before a change is treated as applied.
+
+7. **claude-account-switcher (`SnlperStripes/claude-account-switcher`)**
    - Repository: https://github.com/SnlperStripes/claude-account-switcher
    - License: MIT License
    - Referenced concepts: Claude Desktop multi-account profile isolation, Windows DPAPI + AES-256-GCM Chromium v10 encrypted token cache extraction (`oauth:tokenCacheV2`), Network Cookies store backup and restoration, Anthropic OAuth usage querying (`/api/oauth/usage` with beta header), and fresh login state preparation.

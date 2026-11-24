@@ -20,8 +20,8 @@
 - 🤖 **ChatGPT** (compatible with Windows Store/standalone, macOS App Bundles, and Linux desktop clients)
 - 🧠 **Claude** (compatible with Windows MSIX/Squirrel, macOS App Bundles, and Linux desktop clients)
 - ✨ **Gemini Desktop** (compatible with Windows Squirrel, macOS App Bundles, and Linux desktop clients)
-- 🌌 **Antigravity Desktop**
-- ⚡ **Antigravity IDE** (strict app disambiguation & dedicated LSP proxy inheritance checks)
+- 🌌 **Antigravity Desktop** (supports a reversible local compatibility adjustment, with the original files kept for restore)
+- ⚡ **Antigravity IDE** (strict app disambiguation, dedicated LSP proxy inheritance checks, and the same reversible local compatibility adjustment)
 - 🏭 **Factory Desktop** (compatible with Windows installer/Squirrel/CLI `droid`, macOS App Bundles, and Linux desktop/binary)
 - 🧩 **Custom Extensible**: One-click addition of any Chromium / Electron-based desktop AI app (e.g. Cursor, Windsurf)
 
@@ -42,6 +42,7 @@
 - 🔄 **Smart State Sensing & Safe Restart**: Real-time detection of running state, direct conflicts, and proxy port drift; sends graceful close signals first to safeguard workspace data.
 - 🩺 **Four-Dimensional Diagnostics Engine**: Comprehensive diagnostics spanning upstream tunnel reachability, main CLI arguments, LSP child process env inheritance, and kernel-level TCP snapshots with one-click privacy redaction.
 - 👥 **Multi-Account Switching & Live Quota Monitoring**: Native support for Antigravity, ChatGPT, Claude Desktop, and Factory Desktop, featuring atomic credential switching, safe process relaunch, AES-256-GCM / DPAPI credential decryption, session token expiration, and real-time 5-hour/7-day/30-day quota windows with reset countdowns.
+- 🔓 **Antigravity local compatibility adjustment**: Desktop and IDE can clear a local availability notice caused by some installation environments. Original files are kept automatically and can be restored in one step; repeat it if an app update brings the notice back. This does not change server authorization or account entitlements.
 - 🚀 **Desktop Shortcuts & Lightweight Tray**: Generate standalone desktop shortcuts with original icons, minimize to tray on close, and idle in the background with only ~20MB RAM usage.
 - 📦 **Portable & Modern Bilingual UI**: Auto-detects portable `data/` directory and standard installation modes, with instant English / Simplified Chinese switching and Dark / Light theme support.
 

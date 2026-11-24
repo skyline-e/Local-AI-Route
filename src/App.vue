@@ -13,6 +13,7 @@ import {
   ResetLoginResult,
   OAuthStartInfo,
   OAuthPollResponse,
+  EligibilityStatus,
 } from "./types";
 import { t, currentLang, detectSystemLanguage } from "./i18n";
 import {
@@ -24,6 +25,7 @@ import {
 import AntigravityQuotaPanel from "./components/AntigravityQuotaPanel.vue";
 import {
   ShieldCheck,
+  ShieldOff,
   Zap,
   Globe,
   Play,
@@ -304,6 +306,9 @@ async function onTargetExeChange(target: TargetAppSpec) {
     }
   }
   await saveCurrentSettings();
+  if (["antigravity-app", "antigravity-ide"].includes(target.id) && activeNavId.value === target.id) {
+    await loadEligibilityStatus();
+  }
 }
 
 async function handleAutoDetect(appId: string) {
@@ -316,6 +321,9 @@ async function handleAutoDetect(appId: string) {
         settings.value.targets[appId].exe_path = detected;
       }
       await saveCurrentSettings();
+      if (["antigravity-app", "antigravity-ide"].includes(appId) && activeNavId.value === appId) {
+        await loadEligibilityStatus();
+      }
       showToast(t("toast_auto_detect_success"), "success");
     } else {
       showToast(t("toast_auto_detect_failed"), "warn");
@@ -510,6 +518,124 @@ const isSupportsAccounts = computed(() => {
 const isSupportsResetLogin = computed(() => {
   return ["chatgpt", "claude", "gemini", "antigravity-app", "antigravity-ide", "factory"].includes(currentTarget.value?.id || "");
 });
+
+const isSupportsRegionUnlock = computed(() => {
+  return ["antigravity-app", "antigravity-ide"].includes(currentTarget.value?.id || "");
+});
+
+const eligibility = ref<EligibilityStatus | null>(null);
+const isLoadingEligibility = ref(false);
+const isPatchingEligibility = ref(false);
+let eligibilityReqSeq = 0;
+
+async function toggleLanguage() {
+  currentLang.value = currentLang.value === "zh-CN" ? "en-US" : "zh-CN";
+  await saveCurrentSettings();
+  if (isSupportsRegionUnlock.value) {
+    await loadEligibilityStatus();
+  }
+}
+
+function regionStatusText(status?: EligibilityStatus["status"]): string {
+  switch (status) {
+    case "patched":
+      return t("region_status_patched");
+    case "unpatched":
+      return t("region_status_unpatched");
+    case "missing":
+      return t("region_status_missing");
+    case "locked":
+      return t("region_status_locked");
+    case "unknown":
+      return t("region_status_unknown");
+    default:
+      return t("region_status_checking");
+  }
+}
+
+async function loadEligibilityStatus() {
+  const id = currentTarget.value?.id;
+  if (!id || !["antigravity-app", "antigravity-ide"].includes(id)) {
+    eligibilityReqSeq++;
+    eligibility.value = null;
+    isLoadingEligibility.value = false;
+    return;
+  }
+  const reqId = ++eligibilityReqSeq;
+  isLoadingEligibility.value = true;
+  try {
+    const res = await invoke<EligibilityStatus>("get_eligibility_status", { appId: id });
+    if (reqId !== eligibilityReqSeq || currentTarget.value?.id !== id) return;
+    eligibility.value = res;
+  } catch (err) {
+    if (reqId !== eligibilityReqSeq || currentTarget.value?.id !== id) return;
+    eligibility.value = {
+      app_id: id,
+      status: "unknown",
+      target_path: "",
+      backup_path: "",
+      message: String(err),
+    };
+  } finally {
+    if (reqId === eligibilityReqSeq) {
+      isLoadingEligibility.value = false;
+    }
+  }
+}
+
+async function handleEligibilityPatch() {
+  const target = currentTarget.value;
+  if (!target) return;
+  const status = appStatuses.value[target.id]?.status;
+  if (status && status !== "stopped") {
+    showToast(t("region_unlock_running_note"), "warn");
+    return;
+  }
+  const targetId = target.id;
+  isPatchingEligibility.value = true;
+  try {
+    const res = await invoke<EligibilityStatus>("apply_eligibility_patch", { appId: targetId });
+    if (currentTarget.value?.id === targetId) {
+      eligibilityReqSeq++;
+      eligibility.value = res;
+    }
+    showToast(res.message, "success", 5000);
+  } catch (err) {
+    showToast(String(err), "error", 5000);
+    if (currentTarget.value?.id === targetId) {
+      await loadEligibilityStatus();
+    }
+  } finally {
+    isPatchingEligibility.value = false;
+  }
+}
+
+async function handleEligibilityRestore() {
+  const target = currentTarget.value;
+  if (!target) return;
+  const status = appStatuses.value[target.id]?.status;
+  if (status && status !== "stopped") {
+    showToast(t("region_unlock_running_note"), "warn");
+    return;
+  }
+  const targetId = target.id;
+  isPatchingEligibility.value = true;
+  try {
+    const res = await invoke<EligibilityStatus>("restore_eligibility_patch", { appId: targetId });
+    if (currentTarget.value?.id === targetId) {
+      eligibilityReqSeq++;
+      eligibility.value = res;
+    }
+    showToast(res.message, "success", 5000);
+  } catch (err) {
+    showToast(String(err), "error", 5000);
+    if (currentTarget.value?.id === targetId) {
+      await loadEligibilityStatus();
+    }
+  } finally {
+    isPatchingEligibility.value = false;
+  }
+}
 
 const activeAccount = computed(() => {
   return accounts.value.find((a) => a.is_active);
@@ -963,6 +1089,13 @@ watch(
     if (["chatgpt", "claude", "antigravity-app", "antigravity-ide", "factory"].includes(newId)) {
       loadAccountsForCurrent();
     }
+    if (["antigravity-app", "antigravity-ide"].includes(newId)) {
+      loadEligibilityStatus();
+    } else {
+      eligibilityReqSeq++;
+      eligibility.value = null;
+      isLoadingEligibility.value = false;
+    }
   }
 );
 
@@ -1013,7 +1146,7 @@ onUnmounted(() => {
         <div>
           <h1 class="text-base font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
             {{ t("app_title") }}
-            <span class="text-[10px] px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300 font-mono">v0.2.14</span>
+            <span class="text-[10px] px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300 font-mono">v0.3.0</span>
           </h1>
           <p class="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">{{ t("app_subtitle") }}</p>
         </div>
@@ -1033,7 +1166,7 @@ onUnmounted(() => {
 
         <!-- Language Switch -->
         <button
-          @click="currentLang = currentLang === 'zh-CN' ? 'en-US' : 'zh-CN'; saveCurrentSettings();"
+          @click="toggleLanguage()"
           class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 transition"
         >
           <Globe class="w-3.5 h-3.5 inline mr-1" />
@@ -1484,6 +1617,68 @@ onUnmounted(() => {
             <div v-if="currentTarget.probe_urls?.length" class="flex items-center gap-2 text-[11px] text-slate-400">
               <span>{{ t("probe_endpoint") }}:</span>
               <span class="font-mono text-slate-500 dark:text-slate-400">{{ currentTarget.probe_urls[0] }}</span>
+            </div>
+          </div>
+
+          <!-- Card: 解除地区限制 -->
+          <div
+            v-if="isSupportsRegionUnlock"
+            class="p-4 rounded-xl border border-violet-200/80 dark:border-violet-900/50 bg-violet-50/40 dark:bg-violet-950/20 space-y-3"
+          >
+            <div class="flex items-start justify-between flex-wrap gap-3">
+              <div class="flex items-start gap-2.5 min-w-0">
+                <div class="w-7 h-7 rounded-lg bg-violet-500/10 dark:bg-violet-400/10 flex items-center justify-center text-violet-600 dark:text-violet-300 shrink-0">
+                  <ShieldOff class="w-4 h-4" />
+                </div>
+                <div class="min-w-0">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-xs font-bold text-slate-800 dark:text-slate-200">{{ t("section_region_unlock") }}</span>
+                    <span
+                      :class="[
+                        'text-[10px] font-medium px-1.5 py-0.5 rounded border',
+                        eligibility?.status === 'patched'
+                          ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800'
+                          : eligibility?.status === 'unpatched'
+                          ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-800'
+                          : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-300 border-slate-200 dark:border-slate-700'
+                      ]"
+                    >
+                      {{ isLoadingEligibility ? t("region_status_checking") : regionStatusText(eligibility?.status) }}
+                    </span>
+                  </div>
+                  <p class="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed mt-1">
+                    {{ eligibility?.message || t("region_unlock_desc") }}
+                  </p>
+                </div>
+              </div>
+
+              <div class="flex items-center gap-1.5 shrink-0">
+                <button
+                  @click="handleEligibilityPatch()"
+                  :disabled="isPatchingEligibility || isLoadingEligibility || eligibility?.status === 'patched' || eligibility?.status === 'unknown' || eligibility?.status === 'missing'"
+                  class="px-2.5 py-1 text-xs font-semibold rounded-lg bg-violet-600 hover:bg-violet-700 text-white flex items-center gap-1 transition shadow-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <RotateCw v-if="isPatchingEligibility" class="w-3.5 h-3.5 animate-spin" />
+                  <ShieldOff v-else class="w-3.5 h-3.5" />
+                  <span>{{ t("btn_region_unlock") }}</span>
+                </button>
+                <button
+                  @click="handleEligibilityRestore()"
+                  :disabled="isPatchingEligibility || isLoadingEligibility || !eligibility?.backup_path"
+                  class="px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {{ t("btn_region_restore") }}
+                </button>
+              </div>
+            </div>
+
+            <div v-if="eligibility?.target_path" class="text-[11px] text-slate-400 space-y-1">
+              <p class="font-mono truncate" :title="eligibility.target_path">
+                {{ t("region_target_label") }}: {{ eligibility.target_path }}
+              </p>
+              <p v-if="eligibility.backup_path" class="font-mono truncate" :title="eligibility.backup_path">
+                {{ t("region_backup_label") }}: {{ eligibility.backup_path }}
+              </p>
             </div>
           </div>
 

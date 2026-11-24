@@ -484,3 +484,77 @@ pub fn cancel_oauth_login(session_id: String) -> Result<(), String> {
 pub fn open_external_url(url: String) -> Result<(), String> {
     crate::accounts::oauth::open_url_in_browser(&url)
 }
+
+#[derive(serde::Serialize)]
+pub struct EligibilityStatusDto {
+    pub app_id: String,
+    pub status: String,
+    pub target_path: String,
+    pub backup_path: String,
+    pub message: String,
+}
+
+fn eligibility_dto(status: crate::core::eligibility::EligibilityStatus) -> EligibilityStatusDto {
+    EligibilityStatusDto {
+        app_id: status.app_id,
+        status: status.status.as_str().to_string(),
+        target_path: status.target_path,
+        backup_path: status.backup_path,
+        message: status.message,
+    }
+}
+
+#[tauri::command]
+pub async fn get_eligibility_status(app_id: String, state: State<'_, AppState>) -> Result<EligibilityStatusDto, String> {
+    let (exe_path, is_en) = {
+        let mut settings = safe_lock(&state.settings);
+        let target = resolve_and_heal_target(&mut settings, &app_id)?;
+        let is_en = settings.language == "en-US";
+        (target.exe_path, is_en)
+    };
+    tokio::task::spawn_blocking(move || {
+        eligibility_dto(crate::core::eligibility::inspect(&app_id, &exe_path, is_en))
+    })
+    .await
+    .map_err(|e| format!("Eligibility inspect task error: {e}"))
+}
+
+#[tauri::command]
+pub async fn apply_eligibility_patch(app_id: String, state: State<'_, AppState>) -> Result<EligibilityStatusDto, String> {
+    let (exe_path, is_en) = {
+        let mut settings = safe_lock(&state.settings);
+        let target = resolve_and_heal_target(&mut settings, &app_id)?;
+        let is_en = settings.language == "en-US";
+        (target.exe_path, is_en)
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        crate::core::eligibility::apply(&app_id, &exe_path, is_en)
+    })
+    .await
+    .map_err(|e| format!("Eligibility apply task error: {e}"))??;
+    if result.success {
+        Ok(eligibility_dto(result.status))
+    } else {
+        Err(result.status.message)
+    }
+}
+
+#[tauri::command]
+pub async fn restore_eligibility_patch(app_id: String, state: State<'_, AppState>) -> Result<EligibilityStatusDto, String> {
+    let (exe_path, is_en) = {
+        let mut settings = safe_lock(&state.settings);
+        let target = resolve_and_heal_target(&mut settings, &app_id)?;
+        let is_en = settings.language == "en-US";
+        (target.exe_path, is_en)
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        crate::core::eligibility::restore(&app_id, &exe_path, is_en)
+    })
+    .await
+    .map_err(|e| format!("Eligibility restore task error: {e}"))??;
+    if result.success {
+        Ok(eligibility_dto(result.status))
+    } else {
+        Err(result.status.message)
+    }
+}
